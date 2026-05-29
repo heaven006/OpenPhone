@@ -1,0 +1,8 @@
+.DS_Store
+.worktree/
+out/
+*.log
+*.tmp
+*.swp
+*.swo
+*.pem

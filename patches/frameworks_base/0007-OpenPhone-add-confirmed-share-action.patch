@@ -1,0 +1,84 @@
+From d670f4083a84fd2bb51a40dfed6091d8fd4c9dff Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Wed, 27 May 2026 02:25:44 +0300
+Subject: [PATCH 7/7] OpenPhone: add confirmed share action
+
+Change-Id: Iebda47d0e0ded08eff274b588b0a8e97509f62cc
+
+diff --git a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+index ec3c4edaca7d..f1aef8005184 100644
+--- a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
++++ b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+@@ -316,6 +316,9 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             if ("paste".equals(type)) {
+                 return executeClipboardPaste(taskId, actionRequestJson, capability);
+             }
++            if ("share".equals(type)) {
++                return executeShare(taskId, actionRequestJson, request, capability);
++            }
+ 
+             recordAudit("action_rejected", taskId, capability, "deny",
+                     actionRequestJson, "unsupported_action");
+@@ -536,6 +539,39 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                     taskId, actionRequestJson, capability, "clipboard_paste");
+         }
+ 
++        private String executeShare(String taskId, String actionRequestJson, JSONObject request,
++                String capability) {
++            final String text = request.optString("text", "");
++            if (text.isEmpty()) {
++                recordAudit("action_rejected", taskId, capability, "deny",
++                        actionRequestJson, "missing_text");
++                return actionResultJson("action.denied.missing_text", taskId, actionRequestJson,
++                        capability, "missing_text");
++            }
++
++            final Intent sendIntent = new Intent(Intent.ACTION_SEND);
++            sendIntent.setType(request.optString("mime_type", "text/plain"));
++            sendIntent.putExtra(Intent.EXTRA_TEXT, text);
++            final String subject = request.optString("subject", "");
++            if (!subject.isEmpty()) {
++                sendIntent.putExtra(Intent.EXTRA_SUBJECT, subject);
++            }
++
++            final Intent chooser = Intent.createChooser(sendIntent, "Share with OpenPhone");
++            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            final long token = Binder.clearCallingIdentity();
++            try {
++                mContext.startActivityAsUser(chooser, foregroundUser());
++            } finally {
++                Binder.restoreCallingIdentity(token);
++            }
++
++            recordAudit("action_executed", taskId, capability, "allow_task_scoped",
++                    actionRequestJson, "share_chooser");
++            return actionResultJson("action.executed", taskId, actionRequestJson, capability,
++                    "share_chooser");
++        }
++
+         private String actionResultJson(String state, String taskId, String inputJson,
+                 String capability, String detail) {
+             return actionResultJson(state, taskId, inputJson, capability, detail, null);
+@@ -657,6 +693,9 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             if ("paste".equals(type)) {
+                 return "clipboard.read";
+             }
++            if ("share".equals(type)) {
++                return "share.content";
++            }
+             return "unknown";
+         }
+ 
+@@ -716,7 +755,8 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             }
+             if ("messages.send".equals(capabilityId)
+                     || "calls.place".equals(capabilityId)
+-                    || "account.access".equals(capabilityId)) {
++                    || "account.access".equals(capabilityId)
++                    || "share.content".equals(capabilityId)) {
+                 return "explicit_confirmation_required";
+             }
+             return "deny";
+-- 
+2.50.1 (Apple Git-155)
+

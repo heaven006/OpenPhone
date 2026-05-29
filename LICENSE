@@ -1,0 +1,30 @@
+OpenPhone Source-Available License Notice
+
+This repository contains multiple categories of code and documentation.
+
+1. OpenPhone-owned code and documentation
+
+   Unless a file says otherwise, OpenPhone-owned files in this repository are
+   provided for non-commercial use only. Commercial use requires a separate
+   written license from the OpenPhone project owner.
+
+   This temporary project license is intentionally conservative while the
+   commercial licensing model is finalized. Before public release, replace this
+   file with a complete source-available license, such as a finalized custom
+   OpenPhone license or an established license like PolyForm Noncommercial.
+
+2. Upstream Android, LineageOS, Linux kernel, and third-party code
+
+   Upstream code keeps its original license. OpenPhone does not relicense code
+   it did not create. Apache, BSD, MIT, GPL, proprietary vendor blob, and other
+   notices must be preserved according to the relevant upstream license.
+
+3. GPL-covered code
+
+   GPL-covered code and modifications remain subject to the GPL. OpenPhone does
+   not add non-commercial restrictions to GPL-covered code.
+
+4. Commercial licensing
+
+   Commercial use of OpenPhone-owned code requires a separate license.
+

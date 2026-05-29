@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openphone.dev/schemas/audit-log.schema.json",
+  "title": "OpenPhone Audit Log",
+  "type": "object",
+  "required": ["events", "durable", "source"],
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "audit-event.schema.json"
+      }
+    },
+    "durable": {
+      "type": "boolean"
+    },
+    "max_events": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

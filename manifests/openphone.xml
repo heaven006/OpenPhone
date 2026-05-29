@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <!--
+    OpenPhone local manifest.
+
+    The current implementation keeps OpenPhone-owned files in this repository
+    and copies overlay/ into the Android checkout. Future large diffs should be
+    promoted to OpenPhone forks and listed here as project overrides.
+  -->
+
+  <remote name="openphone" fetch="https://github.com/OpenPhoneOS" revision="main" />
+
+  <!-- Example future override:
+  <remove-project name="LineageOS/android_frameworks_base" />
+  <project
+      path="frameworks/base"
+      name="frameworks_base"
+      remote="openphone"
+      revision="main" />
+  -->
+</manifest>
+

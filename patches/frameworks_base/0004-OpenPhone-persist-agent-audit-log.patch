@@ -1,0 +1,165 @@
+From 0742836f59d748020cfb3482d40e4068c19b172f Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Wed, 27 May 2026 01:56:30 +0300
+Subject: [PATCH 4/7] OpenPhone: persist agent audit log
+
+Change-Id: Ia924c31a37dd8be63615f9bd8c593984a61e3c5f
+
+diff --git a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+index c21df3c6fbb8..f84b285f9695 100644
+--- a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
++++ b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+@@ -23,8 +23,10 @@ import android.content.Intent;
+ import android.hardware.input.InputManager;
+ import android.openphone.IOpenPhoneAgentService;
+ import android.os.Binder;
++import android.os.Environment;
+ import android.os.SystemClock;
+ import android.os.UserHandle;
++import android.util.AtomicFile;
+ import android.util.Slog;
+ import android.view.Display;
+ import android.view.InputDevice;
+@@ -41,6 +43,10 @@ import org.json.JSONArray;
+ import org.json.JSONException;
+ import org.json.JSONObject;
+ 
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
+ import java.util.ArrayDeque;
+ import java.util.ArrayList;
+ import java.util.HashMap;
+@@ -62,6 +68,8 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             "org.openphone.permission.MANAGE_AGENT_TASKS";
+     private static final String PERMISSION_READ_AGENT_AUDIT_LOG =
+             "org.openphone.permission.READ_AGENT_AUDIT_LOG";
++    private static final String OPENPHONE_SYSTEM_DIR = "openphone";
++    private static final String AUDIT_LOG_FILE = "audit-log.json";
+ 
+     private final BinderService mBinderService;
+ 
+@@ -84,16 +92,21 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+         private final Context mContext;
+         private final Object mAuditLock = new Object();
+         private final ArrayDeque<String> mAuditEvents = new ArrayDeque<>(MAX_AUDIT_EVENTS);
++        private final AtomicFile mAuditFile;
+         private final Object mTaskLock = new Object();
+         private final Map<String, Set<String>> mTaskGrants = new HashMap<>();
+ 
+         BinderService(Context context) {
+             mContext = context;
++            final File auditDir = new File(Environment.getDataSystemDirectory(),
++                    OPENPHONE_SYSTEM_DIR);
++            mAuditFile = new AtomicFile(new File(auditDir, AUDIT_LOG_FILE), "openphone-audit");
++            readPersistentAudit();
+         }
+ 
+         @Override
+         public String getServiceStatus() {
+-            return statusJson("ready", auditSize());
++            return statusJson("ready", auditSize(), mAuditFile.getBaseFile().getAbsolutePath());
+         }
+ 
+         @Override
+@@ -163,12 +176,14 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                     "OpenPhone audit access requires READ_AGENT_AUDIT_LOG");
+         }
+ 
+-        private static String statusJson(String state, int auditSize) {
++        private static String statusJson(String state, int auditSize, String auditPath) {
+             JSONObject json = new JSONObject();
+             try {
+                 json.put("state", state);
+                 json.put("service", Context.OPENPHONE_AGENT_SERVICE);
+                 json.put("audit_events", auditSize);
++                json.put("audit_storage", "durable");
++                json.put("audit_path", auditPath);
+             } catch (JSONException e) {
+                 throw new IllegalStateException(e);
+             }
+@@ -696,6 +711,7 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                     mAuditEvents.removeFirst();
+                 }
+                 mAuditEvents.addLast(json.toString());
++                writePersistentAuditLocked();
+             }
+         }
+ 
+@@ -725,11 +741,72 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                     eventJson.put(new JSONObject(event));
+                 }
+                 json.put("events", eventJson);
++                json.put("durable", true);
++                json.put("max_events", MAX_AUDIT_EVENTS);
+                 json.put("source", "system_server.openphone_agent");
+             } catch (JSONException e) {
+                 throw new IllegalStateException(e);
+             }
+             return json.toString();
+         }
++
++        private void readPersistentAudit() {
++            synchronized (mAuditLock) {
++                mAuditEvents.clear();
++                if (!mAuditFile.exists()) {
++                    return;
++                }
++                final byte[] raw;
++                try {
++                    raw = mAuditFile.readFully();
++                } catch (IOException e) {
++                    Slog.w(TAG, "Unable to read persistent OpenPhone audit log", e);
++                    return;
++                }
++                try {
++                    final JSONObject root =
++                            new JSONObject(new String(raw, StandardCharsets.UTF_8));
++                    final JSONArray events = root.optJSONArray("events");
++                    if (events == null) {
++                        return;
++                    }
++                    final int start = Math.max(0, events.length() - MAX_AUDIT_EVENTS);
++                    for (int i = start; i < events.length(); i++) {
++                        final JSONObject event = events.optJSONObject(i);
++                        if (event != null) {
++                            mAuditEvents.addLast(event.toString());
++                        }
++                    }
++                } catch (JSONException e) {
++                    Slog.w(TAG, "Ignoring malformed persistent OpenPhone audit log", e);
++                }
++            }
++        }
++
++        private void writePersistentAuditLocked() {
++            final File baseFile = mAuditFile.getBaseFile();
++            final File parent = baseFile.getParentFile();
++            if (parent != null && !parent.exists() && !parent.mkdirs()) {
++                Slog.w(TAG, "Unable to create OpenPhone audit directory: " + parent);
++                return;
++            }
++
++            final JSONObject root = new JSONObject();
++            final JSONArray events = new JSONArray();
++            FileOutputStream stream = null;
++            try {
++                for (String event : mAuditEvents) {
++                    events.put(new JSONObject(event));
++                }
++                root.put("version", 1);
++                root.put("events", events);
++                stream = mAuditFile.startWrite();
++                stream.write(root.toString().getBytes(StandardCharsets.UTF_8));
++                mAuditFile.finishWrite(stream);
++            } catch (IOException | JSONException e) {
++                Slog.w(TAG, "Unable to persist OpenPhone audit log", e);
++                mAuditFile.failWrite(stream);
++            }
++        }
+     }
+ }
+-- 
+2.50.1 (Apple Git-155)
+

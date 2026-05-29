@@ -1,0 +1,13 @@
+android_app {
+    name: "OpenPhoneAssistant",
+    srcs: [
+        "src/**/*.aidl",
+        "src/**/*.java",
+    ],
+    resource_dirs: ["res"],
+    manifest: "AndroidManifest.xml",
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+    system_ext_specific: true,
+}

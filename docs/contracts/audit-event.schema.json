@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openphone.dev/schemas/audit-event.schema.json",
+  "title": "OpenPhone Audit Event",
+  "type": "object",
+  "required": ["timestamp_elapsed_ms", "event_type"],
+  "properties": {
+    "timestamp_elapsed_ms": {
+      "type": "integer"
+    },
+    "task_id": {
+      "type": ["string", "null"]
+    },
+    "event_type": {
+      "enum": [
+        "task_started",
+        "screen_context_read",
+        "capability_evaluated",
+        "action_rejected",
+        "action_confirmed",
+        "action_executed",
+        "task_finished"
+      ]
+    },
+    "capability": {
+      "type": ["string", "null"]
+    },
+    "decision": {
+      "type": ["string", "null"]
+    },
+    "caller_uid": {
+      "type": "integer"
+    },
+    "detail": {
+      "type": ["string", "null"]
+    },
+    "input_recorded": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

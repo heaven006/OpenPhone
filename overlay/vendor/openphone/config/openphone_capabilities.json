@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "capabilities": [
+    { "id": "screen.read.visible", "risk": "low", "default": "task_grant" },
+    { "id": "screen.capture", "risk": "medium", "default": "confirm" },
+    { "id": "input.perform", "risk": "medium", "default": "task_grant" },
+    { "id": "apps.launch", "risk": "low", "default": "task_grant" },
+    { "id": "tasks.observe", "risk": "low", "default": "task_grant" },
+    { "id": "notifications.read", "risk": "medium", "default": "confirm" },
+    { "id": "notifications.act", "risk": "medium", "default": "confirm" },
+    { "id": "clipboard.read", "risk": "medium", "default": "confirm" },
+    { "id": "clipboard.write", "risk": "low", "default": "task_grant" },
+    { "id": "files.read.scoped", "risk": "medium", "default": "confirm" },
+    { "id": "contacts.read", "risk": "medium", "default": "confirm" },
+    { "id": "calendar.read", "risk": "medium", "default": "confirm" },
+    { "id": "calendar.write", "risk": "medium", "default": "confirm" },
+    { "id": "messages.draft", "risk": "medium", "default": "confirm" },
+    { "id": "messages.send", "risk": "high", "default": "explicit_confirm" },
+    { "id": "calls.place", "risk": "high", "default": "explicit_confirm" },
+    { "id": "settings.read", "risk": "low", "default": "task_grant" },
+    { "id": "settings.write", "risk": "medium", "default": "confirm" },
+    { "id": "background.run", "risk": "medium", "default": "confirm" },
+    { "id": "network.use", "risk": "medium", "default": "confirm" },
+    { "id": "account.access", "risk": "high", "default": "explicit_confirm" }
+  ]
+}
+

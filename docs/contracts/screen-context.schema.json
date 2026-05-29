@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openphone.dev/schemas/screen-context.schema.json",
+  "title": "OpenPhone Screen Context",
+  "type": "object",
+  "required": ["foreground_app", "interactive_elements", "risk_flags"],
+  "properties": {
+    "foreground_app": {
+      "type": "string"
+    },
+    "activity": {
+      "type": "string"
+    },
+    "visible_text": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "visible_activities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["focused", "task_id", "user_id", "package", "activity"],
+        "properties": {
+          "focused": {
+            "type": "boolean"
+          },
+          "task_id": {
+            "type": "integer"
+          },
+          "user_id": {
+            "type": "integer"
+          },
+          "package": {
+            "type": ["string", "null"]
+          },
+          "activity": {
+            "type": ["string", "null"]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "interactive_elements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "label"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "bounds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 4,
+            "maxItems": 4
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "notifications": {
+      "type": "array"
+    },
+    "risk_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,116 @@
+# Pixel 9a Boot Chain Notes
+
+These notes document the Pixel 9a `tegu` boot-chain behavior found during the
+first OpenPhone smoke install.
+
+## Relevant Partitions
+
+The Pixel 9a uses A/B slots. The first OpenPhone smoke OTA installed to slot
+`_b` during bringup.
+
+Partitions involved in the current boot path:
+
+- `boot`
+- `init_boot`
+- `vendor_boot`
+- `vendor_kernel_boot`
+- `dtbo`
+- `vbmeta`
+- `vbmeta_system`
+- `vbmeta_vendor`
+- dynamic partitions: `system`, `system_ext`, `product`, `vendor`,
+  `system_dlkm`, `vendor_dlkm`
+
+## What Failed
+
+OpenPhone userspace was valid enough to boot, but the generated
+`vendor_kernel_boot.img` was not. With the OpenPhone-generated
+`vendor_kernel_boot_b`, the phone fell back to fastboot before Android started.
+
+The failure did not produce useful Android userspace logs because the kernel
+never reached normal boot.
+
+## Isolation Result
+
+Starting from a working slot `_b` with OpenPhone dynamic partitions and the
+official Lineage boot chain:
+
+- OpenPhone `boot_b`: booted
+- OpenPhone `init_boot_b`: booted
+- OpenPhone `vendor_boot_b`: booted
+- OpenPhone `vendor_kernel_boot_b`: fell back to fastboot
+
+This isolated the failure to `vendor_kernel_boot`.
+
+## DTB Packaging Issue
+
+`device/google/zumapro/BoardConfig-common.mk` configures:
+
+```make
+BOARD_PREBUILT_DTBIMAGE_DIR := $(TARGET_KERNEL_DIR)
+```
+
+Android's target-files packaging creates `dtb.img` by concatenating:
+
+```make
+$(wildcard $(BOARD_PREBUILT_DTBIMAGE_DIR)/*.dtb)
+```
+
+For the `tegu` prebuilts observed during bringup,
+`device/google/tegu-kernels/6.1/` did not contain any standalone `*.dtb`
+files. It did contain a prebuilt `vendor_kernel_boot.img` with the DTB embedded.
+
+Result: target-files generated `VENDOR_KERNEL_BOOT/dtb` as a zero-byte file,
+then built a `vendor_kernel_boot.img` with DTB size `0`.
+
+## Temporary Build Fix
+
+Extract the DTB from the prebuilt image before building target-files:
+
+```bash
+cd "$OPENPHONE_ANDROID_DIR"
+rm -rf /tmp/vkb-prebuilt
+mkdir -p /tmp/vkb-prebuilt
+out/host/linux-x86/bin/unpack_bootimg \
+  --boot_img device/google/tegu-kernels/6.1/vendor_kernel_boot.img \
+  --out /tmp/vkb-prebuilt
+cp /tmp/vkb-prebuilt/dtb device/google/tegu-kernels/6.1/tegu.dtb
+sha256sum device/google/tegu-kernels/6.1/tegu.dtb
+```
+
+Expected DTB SHA-256:
+
+```text
+f1aed2bc4c07d3cb1e610f5227a566f22e995dfe05341ca6bf14805be6928688
+```
+
+Then rebuild target-files and the OTA.
+
+## Validation
+
+After rebuilding, inspect the generated image:
+
+```bash
+cd "$OPENPHONE_ANDROID_DIR"
+rm -rf /tmp/vkb-check
+mkdir -p /tmp/vkb-check
+out/host/linux-x86/bin/unpack_bootimg \
+  --boot_img out/target/product/tegu/obj/PACKAGING/target_files_intermediates/openphone_tegu_smoke-target_files/IMAGES/vendor_kernel_boot.img \
+  --out /tmp/vkb-check
+ls -lh /tmp/vkb-check/dtb
+sha256sum /tmp/vkb-check/dtb
+```
+
+Expected result:
+
+- DTB size: `1546258`
+- DTB SHA-256:
+  `f1aed2bc4c07d3cb1e610f5227a566f22e995dfe05341ca6bf14805be6928688`
+
+## Open Question
+
+The product variable `PRODUCT_BUILD_VENDOR_KERNEL_BOOT_IMAGE := false` was
+tried in the OpenPhone product overlay but did not prevent target-files from
+rebuilding `vendor_kernel_boot.img`. Treat that variable as insufficient for
+this branch until proven otherwise.
+

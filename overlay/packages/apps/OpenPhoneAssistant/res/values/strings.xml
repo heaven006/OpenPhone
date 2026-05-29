@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenPhone Assistant</string>
+    <string name="permission_bind_assistant_service">Bind OpenPhone Assistant service</string>
+    <string name="permission_read_screen_context">Read OpenPhone screen context</string>
+    <string name="permission_perform_device_action">Perform OpenPhone device actions</string>
+    <string name="permission_manage_agent_tasks">Manage OpenPhone agent tasks</string>
+    <string name="permission_read_agent_audit_log">Read OpenPhone agent audit log</string>
+    <string name="status_bootstrap">OpenPhone Assistant bootstrap</string>
+    <string name="status_detail">Privileged assistant service is installed and starts after boot.</string>
+</resources>

@@ -1,0 +1,32 @@
+From c1bff4caa8c21364c2b425987eebb565cedafe04 Mon Sep 17 00:00:00 2001
+From: Adam Cohen Hillel <adamcohenhillel@gmail.com>
+Date: Tue, 26 May 2026 23:55:43 +0300
+Subject: [PATCH 2/3] OpenPhone: skip host-cross Go blueprint tools
+
+Change-Id: I48152264e80e958f8529afc8d56b5b4161338fef
+
+diff --git a/golang/golang.go b/golang/golang.go
+index 282ac7805..ae30e250c 100644
+--- a/golang/golang.go
++++ b/golang/golang.go
+@@ -54,7 +54,7 @@ type GoPackage struct {
+ func goPackageModuleFactory() android.Module {
+ 	module := &GoPackage{}
+ 	module.AddProperties(module.Properties()...)
+-	android.InitAndroidArchModule(module, android.HostSupported, android.MultilibFirst)
++	android.InitAndroidArchModule(module, android.HostSupportedNoCross, android.MultilibFirst)
+ 	return module
+ }
+ 
+@@ -88,7 +88,7 @@ type GoBinary struct {
+ func goBinaryModuleFactory() android.Module {
+ 	module := &GoBinary{}
+ 	module.AddProperties(module.Properties()...)
+-	android.InitAndroidArchModule(module, android.HostSupported, android.MultilibFirst)
++	android.InitAndroidArchModule(module, android.HostSupportedNoCross, android.MultilibFirst)
+ 	return module
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

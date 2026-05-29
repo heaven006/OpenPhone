@@ -1,0 +1,384 @@
+From 3069e57829d9d22d748a8f8152564f641f56768d Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Wed, 27 May 2026 01:50:15 +0300
+Subject: [PATCH 3/7] OpenPhone: add task-scoped input action execution
+
+Change-Id: Ifaa0eb0e91038d039cbc02306a96951301dcb4d4
+
+diff --git a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+index a37e1b6629e5..c21df3c6fbb8 100644
+--- a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
++++ b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+@@ -20,11 +20,17 @@ import android.app.ActivityManager;
+ import android.content.Context;
+ import android.content.ComponentName;
+ import android.content.Intent;
++import android.hardware.input.InputManager;
+ import android.openphone.IOpenPhoneAgentService;
+ import android.os.Binder;
+ import android.os.SystemClock;
+ import android.os.UserHandle;
+ import android.util.Slog;
++import android.view.Display;
++import android.view.InputDevice;
++import android.view.KeyCharacterMap;
++import android.view.KeyEvent;
++import android.view.MotionEvent;
+ 
+ import com.android.server.LocalServices;
+ import com.android.server.SystemService;
+@@ -37,7 +43,11 @@ import org.json.JSONObject;
+ 
+ import java.util.ArrayDeque;
+ import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.HashSet;
+ import java.util.List;
++import java.util.Map;
++import java.util.Set;
+ 
+ /**
+  * Minimal OpenPhone system_server authority for agent capabilities.
+@@ -68,10 +78,14 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+ 
+     private static final class BinderService extends IOpenPhoneAgentService.Stub {
+         private static final int MAX_AUDIT_EVENTS = 200;
++        private static final long DEFAULT_LONG_PRESS_MS = 500;
++        private static final long DEFAULT_SWIPE_MS = 250;
+ 
+         private final Context mContext;
+         private final Object mAuditLock = new Object();
+         private final ArrayDeque<String> mAuditEvents = new ArrayDeque<>(MAX_AUDIT_EVENTS);
++        private final Object mTaskLock = new Object();
++        private final Map<String, Set<String>> mTaskGrants = new HashMap<>();
+ 
+         BinderService(Context context) {
+             mContext = context;
+@@ -86,9 +100,13 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+         public String startTask(String taskRequestJson) {
+             enforceManageTasks();
+             final String taskId = "task-" + SystemClock.elapsedRealtimeNanos();
++            final Set<String> grants = approvedCapabilities(taskRequestJson);
++            synchronized (mTaskLock) {
++                mTaskGrants.put(taskId, grants);
++            }
+             recordAudit("task_started", taskId, "tasks.observe", "allow_task_scoped",
+-                    taskRequestJson, null);
+-            return taskResultJson(taskId, taskRequestJson);
++                    taskRequestJson, "grants=" + grants);
++            return taskResultJson(taskId, taskRequestJson, grants);
+         }
+ 
+         @Override
+@@ -209,11 +227,12 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+ 
+             final String type = request.optString("type", "");
+             final String capability = capabilityFromAction(type, request);
+-            final String decision = decisionForCapability(capability);
++            final String decision = decisionForAction(taskId, type, capability);
+             if (!"allow_task_scoped".equals(decision)) {
+                 recordAudit("action_rejected", taskId, capability, decision,
+                         actionRequestJson, "policy");
+-                return actionResultJson("action.confirmation_required".equals(decision)
++                return actionResultJson("confirmation_required".equals(decision)
++                                || "explicit_confirmation_required".equals(decision)
+                                 ? "action.confirmation_required" : "action.denied.policy",
+                         taskId, actionRequestJson, capability, "policy");
+             }
+@@ -221,6 +240,19 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             if ("open_app".equals(type)) {
+                 return executeOpenApp(taskId, actionRequestJson, request, capability);
+             }
++            if ("back".equals(type) || "home".equals(type) || "recents".equals(type)) {
++                return executeNavigationKey(taskId, actionRequestJson, type, capability);
++            }
++            if ("tap".equals(type) || "long_press".equals(type)) {
++                return executePointerPress(taskId, actionRequestJson, request, capability,
++                        "long_press".equals(type));
++            }
++            if ("scroll".equals(type)) {
++                return executeScroll(taskId, actionRequestJson, request, capability);
++            }
++            if ("type_text".equals(type)) {
++                return executeTypeText(taskId, actionRequestJson, request, capability);
++            }
+ 
+             recordAudit("action_rejected", taskId, capability, "deny",
+                     actionRequestJson, "unsupported_action");
+@@ -261,6 +293,113 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                     capability, packageName);
+         }
+ 
++        private String executeNavigationKey(String taskId, String actionRequestJson, String type,
++                String capability) {
++            final int keyCode;
++            switch (type) {
++                case "back":
++                    keyCode = KeyEvent.KEYCODE_BACK;
++                    break;
++                case "home":
++                    keyCode = KeyEvent.KEYCODE_HOME;
++                    break;
++                case "recents":
++                    keyCode = KeyEvent.KEYCODE_APP_SWITCH;
++                    break;
++                default:
++                    return actionResultJson("action.denied.unsupported", taskId, actionRequestJson,
++                            capability, "unsupported_navigation");
++            }
++
++            final boolean injected = injectKey(keyCode);
++            recordAudit(injected ? "action_executed" : "action_rejected", taskId, capability,
++                    injected ? "allow_task_scoped" : "deny", actionRequestJson, type);
++            return actionResultJson(injected ? "action.executed" : "action.denied.input_failed",
++                    taskId, actionRequestJson, capability, type);
++        }
++
++        private String executePointerPress(String taskId, String actionRequestJson,
++                JSONObject request, String capability, boolean longPress) {
++            final JSONObject target = request.optJSONObject("target");
++            final float x = optFloat(target, "x", Float.NaN);
++            final float y = optFloat(target, "y", Float.NaN);
++            if (Float.isNaN(x) || Float.isNaN(y)) {
++                recordAudit("action_rejected", taskId, capability, "deny",
++                        actionRequestJson, "missing_coordinates");
++                return actionResultJson("action.denied.missing_coordinates", taskId,
++                        actionRequestJson, capability, "missing_coordinates");
++            }
++
++            final boolean injected = injectTap(x, y, longPress ? DEFAULT_LONG_PRESS_MS : 0);
++            final String detail = (longPress ? "long_press" : "tap") + ":" + x + "," + y;
++            recordAudit(injected ? "action_executed" : "action_rejected", taskId, capability,
++                    injected ? "allow_task_scoped" : "deny", actionRequestJson, detail);
++            return actionResultJson(injected ? "action.executed" : "action.denied.input_failed",
++                    taskId, actionRequestJson, capability, detail);
++        }
++
++        private String executeScroll(String taskId, String actionRequestJson, JSONObject request,
++                String capability) {
++            final JSONObject target = request.optJSONObject("target");
++            float startX = optFloat(target, "start_x", Float.NaN);
++            float startY = optFloat(target, "start_y", Float.NaN);
++            float endX = optFloat(target, "end_x", Float.NaN);
++            float endY = optFloat(target, "end_y", Float.NaN);
++            if (Float.isNaN(startX) || Float.isNaN(startY)
++                    || Float.isNaN(endX) || Float.isNaN(endY)) {
++                startX = optFloat(target, "x", Float.NaN);
++                startY = optFloat(target, "y", Float.NaN);
++                final float deltaX = optFloat(target, "dx", 0);
++                final float deltaY = optFloat(target, "dy", 0);
++                endX = Float.isNaN(startX) ? Float.NaN : startX + deltaX;
++                endY = Float.isNaN(startY) ? Float.NaN : startY + deltaY;
++            }
++            if (Float.isNaN(startX) || Float.isNaN(startY)
++                    || Float.isNaN(endX) || Float.isNaN(endY)) {
++                recordAudit("action_rejected", taskId, capability, "deny",
++                        actionRequestJson, "missing_scroll_coordinates");
++                return actionResultJson("action.denied.missing_coordinates", taskId,
++                        actionRequestJson, capability, "missing_scroll_coordinates");
++            }
++
++            final boolean injected = injectSwipe(startX, startY, endX, endY, DEFAULT_SWIPE_MS);
++            final String detail = "scroll:" + startX + "," + startY + "->" + endX + "," + endY;
++            recordAudit(injected ? "action_executed" : "action_rejected", taskId, capability,
++                    injected ? "allow_task_scoped" : "deny", actionRequestJson, detail);
++            return actionResultJson(injected ? "action.executed" : "action.denied.input_failed",
++                    taskId, actionRequestJson, capability, detail);
++        }
++
++        private String executeTypeText(String taskId, String actionRequestJson, JSONObject request,
++                String capability) {
++            final String text = request.optString("text", "");
++            if (text.isEmpty()) {
++                recordAudit("action_rejected", taskId, capability, "deny",
++                        actionRequestJson, "missing_text");
++                return actionResultJson("action.denied.missing_text", taskId, actionRequestJson,
++                        capability, "missing_text");
++            }
++
++            final KeyCharacterMap keyCharacterMap =
++                    KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
++            final KeyEvent[] events = keyCharacterMap.getEvents(text.toCharArray());
++            if (events == null) {
++                recordAudit("action_rejected", taskId, capability, "deny",
++                        actionRequestJson, "text_not_key_mappable");
++                return actionResultJson("action.denied.text_not_key_mappable", taskId,
++                        actionRequestJson, capability, "text_not_key_mappable");
++            }
++
++            boolean injected = true;
++            for (KeyEvent event : events) {
++                injected &= injectInputEvent(event);
++            }
++            recordAudit(injected ? "action_executed" : "action_rejected", taskId, capability,
++                    injected ? "allow_task_scoped" : "deny", actionRequestJson, "type_text");
++            return actionResultJson(injected ? "action.executed" : "action.denied.input_failed",
++                    taskId, actionRequestJson, capability, "type_text");
++        }
++
+         private String actionResultJson(String state, String taskId, String inputJson,
+                 String capability, String detail) {
+             JSONObject json = new JSONObject();
+@@ -278,12 +417,13 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return json.toString();
+         }
+ 
+-        private static String taskResultJson(String taskId, String inputJson) {
++        private static String taskResultJson(String taskId, String inputJson, Set<String> grants) {
+             JSONObject json = new JSONObject();
+             try {
+                 json.put("state", "task.accepted");
+                 json.put("task_id", taskId);
+                 json.put("caller_uid", Binder.getCallingUid());
++                json.put("approved_capabilities", stringSetJson(grants));
+                 json.put("input", inputJson);
+                 json.put("source", "system_server.openphone_agent");
+             } catch (JSONException e) {
+@@ -371,6 +511,16 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return "unknown";
+         }
+ 
++        private String decisionForAction(String taskId, String type, String capabilityId) {
++            if ("back".equals(type) || "home".equals(type) || "recents".equals(type)) {
++                return "allow_task_scoped";
++            }
++            if ("input.perform".equals(capabilityId) && taskHasGrant(taskId, capabilityId)) {
++                return "allow_task_scoped";
++            }
++            return decisionForCapability(capabilityId);
++        }
++
+         private static String decisionForCapability(String capabilityId) {
+             if ("screen.read.visible".equals(capabilityId)
+                     || "tasks.observe".equals(capabilityId)
+@@ -404,6 +554,127 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return "capability is not allowed by the OpenPhone seed policy";
+         }
+ 
++        private Set<String> approvedCapabilities(String taskRequestJson) {
++            final HashSet<String> grants = new HashSet<>();
++            if (taskRequestJson == null || taskRequestJson.isEmpty()) {
++                return grants;
++            }
++            try {
++                final JSONObject request = new JSONObject(taskRequestJson);
++                addStringArray(grants, request.optJSONArray("approved_capabilities"));
++                addStringArray(grants, request.optJSONArray("granted_capabilities"));
++            } catch (JSONException e) {
++                Slog.w(TAG, "Ignoring malformed task grant payload", e);
++            }
++            return grants;
++        }
++
++        private boolean taskHasGrant(String taskId, String capability) {
++            synchronized (mTaskLock) {
++                final Set<String> grants = mTaskGrants.get(taskId);
++                return grants != null && grants.contains(capability);
++            }
++        }
++
++        private static void addStringArray(Set<String> output, JSONArray values) {
++            if (values == null) {
++                return;
++            }
++            for (int i = 0; i < values.length(); i++) {
++                final String value = values.optString(i, "");
++                if (!value.isEmpty()) {
++                    output.add(value);
++                }
++            }
++        }
++
++        private static JSONArray stringSetJson(Set<String> values) {
++            final JSONArray json = new JSONArray();
++            for (String value : values) {
++                json.put(value);
++            }
++            return json;
++        }
++
++        private boolean injectKey(int keyCode) {
++            final long now = SystemClock.uptimeMillis();
++            final KeyEvent down = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode,
++                    0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
++                    KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_KEYBOARD);
++            final KeyEvent up = new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode,
++                    0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
++                    KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_KEYBOARD);
++            return injectInputEvent(down) && injectInputEvent(up);
++        }
++
++        private boolean injectTap(float x, float y, long pressDurationMs) {
++            final long downTime = SystemClock.uptimeMillis();
++            return injectMotion(MotionEvent.ACTION_DOWN, downTime, downTime, x, y)
++                    && injectMotion(MotionEvent.ACTION_UP, downTime,
++                            downTime + pressDurationMs, x, y);
++        }
++
++        private boolean injectSwipe(float startX, float startY, float endX, float endY,
++                long durationMs) {
++            final long downTime = SystemClock.uptimeMillis();
++            boolean injected = injectMotion(MotionEvent.ACTION_DOWN, downTime, downTime,
++                    startX, startY);
++            final int steps = 8;
++            for (int i = 1; i < steps && injected; i++) {
++                final float alpha = (float) i / steps;
++                injected &= injectMotion(MotionEvent.ACTION_MOVE, downTime,
++                        downTime + (durationMs * i / steps),
++                        lerp(startX, endX, alpha), lerp(startY, endY, alpha));
++            }
++            return injected && injectMotion(MotionEvent.ACTION_UP, downTime,
++                    downTime + durationMs, endX, endY);
++        }
++
++        private boolean injectMotion(int action, long downTime, long eventTime, float x, float y) {
++            final MotionEvent.PointerProperties[] properties =
++                    new MotionEvent.PointerProperties[1];
++            properties[0] = new MotionEvent.PointerProperties();
++            properties[0].id = 0;
++            properties[0].toolType = MotionEvent.TOOL_TYPE_FINGER;
++
++            final MotionEvent.PointerCoords[] coords = new MotionEvent.PointerCoords[1];
++            coords[0] = new MotionEvent.PointerCoords();
++            coords[0].x = x;
++            coords[0].y = y;
++            coords[0].pressure = action == MotionEvent.ACTION_UP ? 0.0f : 1.0f;
++            coords[0].size = 1.0f;
++
++            final MotionEvent event = MotionEvent.obtain(downTime, eventTime, action, 1,
++                    properties, coords, 0, 0, 1.0f, 1.0f, 0, 0,
++                    InputDevice.SOURCE_TOUCHSCREEN, Display.DEFAULT_DISPLAY, 0);
++            return injectInputEvent(event);
++        }
++
++        private boolean injectInputEvent(android.view.InputEvent event) {
++            final InputManager inputManager = mContext.getSystemService(InputManager.class);
++            if (inputManager == null) {
++                return false;
++            }
++            final long token = Binder.clearCallingIdentity();
++            try {
++                return inputManager.injectInputEvent(event,
++                        InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH);
++            } finally {
++                Binder.restoreCallingIdentity(token);
++            }
++        }
++
++        private static float optFloat(JSONObject json, String key, float defaultValue) {
++            if (json == null || !json.has(key)) {
++                return defaultValue;
++            }
++            return (float) json.optDouble(key, defaultValue);
++        }
++
++        private static float lerp(float start, float end, float alpha) {
++            return start + ((end - start) * alpha);
++        }
++
+         private void recordAudit(String eventType, String taskId, String capability,
+                 String decision, String inputJson, String detail) {
+             final JSONObject json = new JSONObject();
+-- 
+2.50.1 (Apple Git-155)
+

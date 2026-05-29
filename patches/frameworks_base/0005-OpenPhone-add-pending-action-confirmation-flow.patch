@@ -1,0 +1,237 @@
+From 8837b5622a94b888059efea0845f42420cc2cc4e Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Wed, 27 May 2026 02:12:49 +0300
+Subject: [PATCH 5/7] OpenPhone: add pending action confirmation flow
+
+Change-Id: I95f33e4bf9dc46e25d073df6590852fd3201e796
+
+diff --git a/core/java/android/openphone/IOpenPhoneAgentService.aidl b/core/java/android/openphone/IOpenPhoneAgentService.aidl
+index 58123b351f5e..5175c78d6d66 100644
+--- a/core/java/android/openphone/IOpenPhoneAgentService.aidl
++++ b/core/java/android/openphone/IOpenPhoneAgentService.aidl
+@@ -6,6 +6,7 @@ interface IOpenPhoneAgentService {
+     String startTask(String taskRequestJson);
+     String getScreenContext(String taskId);
+     String executeAction(String taskId, String actionRequestJson);
++    String confirmAction(String pendingActionId, boolean approved);
+     String evaluateCapability(String capabilityId);
+     String getAuditLog(int maxEvents);
+ }
+diff --git a/core/java/android/openphone/OpenPhoneAgentManager.java b/core/java/android/openphone/OpenPhoneAgentManager.java
+index ee08347ecf0b..aff9c157ba3c 100644
+--- a/core/java/android/openphone/OpenPhoneAgentManager.java
++++ b/core/java/android/openphone/OpenPhoneAgentManager.java
+@@ -75,6 +75,16 @@ public final class OpenPhoneAgentManager {
+         }
+     }
+ 
++    /** @hide */
++    @NonNull
++    public String confirmAction(@NonNull String pendingActionId, boolean approved) {
++        try {
++            return mService.confirmAction(pendingActionId, approved);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
+     /** @hide */
+     @NonNull
+     public String evaluateCapability(@NonNull String capabilityId) {
+diff --git a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+index f84b285f9695..d6ecc52de521 100644
+--- a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
++++ b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+@@ -86,6 +86,7 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+ 
+     private static final class BinderService extends IOpenPhoneAgentService.Stub {
+         private static final int MAX_AUDIT_EVENTS = 200;
++        private static final int MAX_PENDING_ACTIONS = 50;
+         private static final long DEFAULT_LONG_PRESS_MS = 500;
+         private static final long DEFAULT_SWIPE_MS = 250;
+ 
+@@ -95,6 +96,8 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+         private final AtomicFile mAuditFile;
+         private final Object mTaskLock = new Object();
+         private final Map<String, Set<String>> mTaskGrants = new HashMap<>();
++        private final Object mPendingActionLock = new Object();
++        private final Map<String, PendingAction> mPendingActions = new HashMap<>();
+ 
+         BinderService(Context context) {
+             mContext = context;
+@@ -106,7 +109,8 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+ 
+         @Override
+         public String getServiceStatus() {
+-            return statusJson("ready", auditSize(), mAuditFile.getBaseFile().getAbsolutePath());
++            return statusJson("ready", auditSize(), pendingActionSize(),
++                    mAuditFile.getBaseFile().getAbsolutePath());
+         }
+ 
+         @Override
+@@ -134,7 +138,36 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+         @Override
+         public String executeAction(String taskId, String actionRequestJson) {
+             enforcePerformDeviceAction();
+-            return executeActionInternal(taskId, actionRequestJson);
++            return executeActionInternal(taskId, actionRequestJson, false);
++        }
++
++        @Override
++        public String confirmAction(String pendingActionId, boolean approved) {
++            enforcePerformDeviceAction();
++            final PendingAction pendingAction;
++            synchronized (mPendingActionLock) {
++                pendingAction = mPendingActions.remove(pendingActionId);
++            }
++            if (pendingAction == null) {
++                recordAudit("action_rejected", null, "unknown", "deny",
++                        null, "pending_not_found:" + pendingActionId);
++                return actionResultJson("action.denied.pending_not_found", null, null,
++                        "unknown", pendingActionId);
++            }
++
++            if (!approved) {
++                recordAudit("action_rejected", pendingAction.taskId, pendingAction.capability,
++                        "deny", pendingAction.actionRequestJson,
++                        "confirmation_denied:" + pendingActionId);
++                return actionResultJson("action.denied.user_rejected", pendingAction.taskId,
++                        pendingAction.actionRequestJson, pendingAction.capability,
++                        pendingActionId);
++            }
++
++            recordAudit("action_confirmed", pendingAction.taskId, pendingAction.capability,
++                    "allow_task_scoped", pendingAction.actionRequestJson, pendingActionId);
++            return executeActionInternal(pendingAction.taskId, pendingAction.actionRequestJson,
++                    true);
+         }
+ 
+         @Override
+@@ -176,12 +209,14 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                     "OpenPhone audit access requires READ_AGENT_AUDIT_LOG");
+         }
+ 
+-        private static String statusJson(String state, int auditSize, String auditPath) {
++        private static String statusJson(String state, int auditSize, int pendingActions,
++                String auditPath) {
+             JSONObject json = new JSONObject();
+             try {
+                 json.put("state", state);
+                 json.put("service", Context.OPENPHONE_AGENT_SERVICE);
+                 json.put("audit_events", auditSize);
++                json.put("pending_actions", pendingActions);
+                 json.put("audit_storage", "durable");
+                 json.put("audit_path", auditPath);
+             } catch (JSONException e) {
+@@ -229,7 +264,8 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return json.toString();
+         }
+ 
+-        private String executeActionInternal(String taskId, String actionRequestJson) {
++        private String executeActionInternal(String taskId, String actionRequestJson,
++                boolean confirmationApproved) {
+             final JSONObject request;
+             try {
+                 request = new JSONObject(actionRequestJson);
+@@ -242,14 +278,18 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+ 
+             final String type = request.optString("type", "");
+             final String capability = capabilityFromAction(type, request);
+-            final String decision = decisionForAction(taskId, type, capability);
++            final String decision = confirmationApproved
++                    ? "allow_task_scoped" : decisionForAction(taskId, type, capability);
+             if (!"allow_task_scoped".equals(decision)) {
++                final String pendingActionId = isConfirmationDecision(decision)
++                        ? addPendingAction(taskId, actionRequestJson, capability) : null;
+                 recordAudit("action_rejected", taskId, capability, decision,
+-                        actionRequestJson, "policy");
++                        actionRequestJson, pendingActionId == null ? "policy"
++                                : "pending:" + pendingActionId);
+                 return actionResultJson("confirmation_required".equals(decision)
+                                 || "explicit_confirmation_required".equals(decision)
+                                 ? "action.confirmation_required" : "action.denied.policy",
+-                        taskId, actionRequestJson, capability, "policy");
++                        taskId, actionRequestJson, capability, "policy", pendingActionId);
+             }
+ 
+             if ("open_app".equals(type)) {
+@@ -417,6 +457,11 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+ 
+         private String actionResultJson(String state, String taskId, String inputJson,
+                 String capability, String detail) {
++            return actionResultJson(state, taskId, inputJson, capability, detail, null);
++        }
++
++        private String actionResultJson(String state, String taskId, String inputJson,
++                String capability, String detail, String pendingActionId) {
+             JSONObject json = new JSONObject();
+             try {
+                 json.put("state", state);
+@@ -425,6 +470,8 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                 json.put("capability", capability);
+                 json.put("detail", detail == null ? JSONObject.NULL : detail);
+                 json.put("input", inputJson);
++                json.put("pending_action_id", pendingActionId == null
++                        ? JSONObject.NULL : pendingActionId);
+                 json.put("source", "system_server.openphone_agent");
+             } catch (JSONException e) {
+                 throw new IllegalStateException(e);
+@@ -536,6 +583,37 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return decisionForCapability(capabilityId);
+         }
+ 
++        private static boolean isConfirmationDecision(String decision) {
++            return "confirmation_required".equals(decision)
++                    || "explicit_confirmation_required".equals(decision);
++        }
++
++        private String addPendingAction(String taskId, String actionRequestJson,
++                String capability) {
++            final String pendingActionId = "pending-" + SystemClock.elapsedRealtimeNanos();
++            synchronized (mPendingActionLock) {
++                if (mPendingActions.size() >= MAX_PENDING_ACTIONS) {
++                    String oldest = null;
++                    for (String id : mPendingActions.keySet()) {
++                        oldest = id;
++                        break;
++                    }
++                    if (oldest != null) {
++                        mPendingActions.remove(oldest);
++                    }
++                }
++                mPendingActions.put(pendingActionId,
++                        new PendingAction(taskId, actionRequestJson, capability));
++            }
++            return pendingActionId;
++        }
++
++        private int pendingActionSize() {
++            synchronized (mPendingActionLock) {
++                return mPendingActions.size();
++            }
++        }
++
+         private static String decisionForCapability(String capabilityId) {
+             if ("screen.read.visible".equals(capabilityId)
+                     || "tasks.observe".equals(capabilityId)
+@@ -808,5 +886,17 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                 mAuditFile.failWrite(stream);
+             }
+         }
++
++        private static final class PendingAction {
++            final String taskId;
++            final String actionRequestJson;
++            final String capability;
++
++            PendingAction(String taskId, String actionRequestJson, String capability) {
++                this.taskId = taskId;
++                this.actionRequestJson = actionRequestJson;
++                this.capability = capability;
++            }
++        }
+     }
+ }
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openphone.dev/schemas/agent-task.schema.json",
+  "title": "OpenPhone Agent Task",
+  "type": "object",
+  "required": ["goal"],
+  "properties": {
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "user_visible": {
+      "type": "boolean",
+      "default": true
+    },
+    "background_allowed": {
+      "type": "boolean",
+      "default": false
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "approved_capabilities": {
+      "type": "array",
+      "description": "Capabilities explicitly approved for this task by a trusted OpenPhone consent surface.",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "granted_capabilities": {
+      "type": "array",
+      "description": "Compatibility alias for approved_capabilities while the task contract stabilizes.",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "expires_in_seconds": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,40 @@
+From 6816e83e9481d812efed0bdec473232f8c2f4ff4 Mon Sep 17 00:00:00 2001
+From: Adam Cohen Hillel <adamcohenhillel@gmail.com>
+Date: Wed, 27 May 2026 00:12:14 +0300
+Subject: [PATCH] OpenPhone: fix f2fs xattr dump on Darwin
+
+Change-Id: Ic4d5d5cf35911c685e460b8cae49550380d346eb
+---
+ fsck/dump.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/fsck/dump.c b/fsck/dump.c
+index dc3c199..c397c2e 100644
+--- a/fsck/dump.c
++++ b/fsck/dump.c
+@@ -448,7 +448,7 @@ static void dump_xattr(struct f2fs_sb_info *sbi, struct f2fs_node *node_blk, int
+ 		if (S_ISDIR(type)) {
+ 			ret = setxattr(".", xattr_name, value,
+ 							le16_to_cpu(ent->e_value_size), 0);
+-		} if (S_ISLNK(type) && c.preserve_symlinks) {
++		} else if (S_ISLNK(type) && c.preserve_symlinks) {
+ 			ret = lsetxattr(c.dump_symlink, xattr_name, value,
+ 							le16_to_cpu(ent->e_value_size), 0);
+ 		} else {
+@@ -461,10 +461,10 @@ static void dump_xattr(struct f2fs_sb_info *sbi, struct f2fs_node *node_blk, int
+ 			ret = setxattr(".", xattr_name, value,
+ 					le16_to_cpu(ent->e_value_size), 0,
+ 					XATTR_CREATE);
+-		} if (S_ISLNK(type) && c.preserve_symlinks) {
+-			ret = lsetxattr(c.dump_symlink, xattr_name, value,
++		} else if (S_ISLNK(type) && c.preserve_symlinks) {
++			ret = setxattr(c.dump_symlink, xattr_name, value,
+ 					le16_to_cpu(ent->e_value_size), 0,
+-					XATTR_CREATE);
++					XATTR_CREATE | XATTR_NOFOLLOW);
+ 		} else {
+ 			ret = fsetxattr(c.dump_fd, xattr_name, value,
+ 					le16_to_cpu(ent->e_value_size), 0,
+-- 
+2.50.1 (Apple Git-155)
+

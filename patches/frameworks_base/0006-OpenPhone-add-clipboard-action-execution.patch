@@ -1,0 +1,161 @@
+From 97e966dee21c09ade447360724c3fc6a69539b33 Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Wed, 27 May 2026 02:19:25 +0300
+Subject: [PATCH 6/7] OpenPhone: add clipboard action execution
+
+Change-Id: I321aab6562dcb0261227fb6092b022fd0f377b9a
+
+diff --git a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+index d6ecc52de521..ec3c4edaca7d 100644
+--- a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
++++ b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+@@ -17,6 +17,8 @@
+ package com.android.server.openphone;
+ 
+ import android.app.ActivityManager;
++import android.content.ClipData;
++import android.content.ClipboardManager;
+ import android.content.Context;
+ import android.content.ComponentName;
+ import android.content.Intent;
+@@ -308,6 +310,12 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             if ("type_text".equals(type)) {
+                 return executeTypeText(taskId, actionRequestJson, request, capability);
+             }
++            if ("copy".equals(type)) {
++                return executeClipboardWrite(taskId, actionRequestJson, request, capability);
++            }
++            if ("paste".equals(type)) {
++                return executeClipboardPaste(taskId, actionRequestJson, capability);
++            }
+ 
+             recordAudit("action_rejected", taskId, capability, "deny",
+                     actionRequestJson, "unsupported_action");
+@@ -455,6 +463,79 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                     taskId, actionRequestJson, capability, "type_text");
+         }
+ 
++        private String executeClipboardWrite(String taskId, String actionRequestJson,
++                JSONObject request, String capability) {
++            final String text = request.optString("text", "");
++            if (text.isEmpty()) {
++                recordAudit("action_rejected", taskId, capability, "deny",
++                        actionRequestJson, "missing_text");
++                return actionResultJson("action.denied.missing_text", taskId, actionRequestJson,
++                        capability, "missing_text");
++            }
++
++            final ClipboardManager clipboardManager =
++                    mContext.getSystemService(ClipboardManager.class);
++            if (clipboardManager == null) {
++                recordAudit("action_rejected", taskId, capability, "deny",
++                        actionRequestJson, "clipboard_unavailable");
++                return actionResultJson("action.denied.clipboard_unavailable", taskId,
++                        actionRequestJson, capability, "clipboard_unavailable");
++            }
++
++            final long token = Binder.clearCallingIdentity();
++            try {
++                clipboardManager.setPrimaryClip(ClipData.newPlainText("OpenPhone", text));
++            } finally {
++                Binder.restoreCallingIdentity(token);
++            }
++
++            recordAudit("action_executed", taskId, capability, "allow_task_scoped",
++                    actionRequestJson, "clipboard_write");
++            return actionResultJson("action.executed", taskId, actionRequestJson, capability,
++                    "clipboard_write");
++        }
++
++        private String executeClipboardPaste(String taskId, String actionRequestJson,
++                String capability) {
++            final ClipboardManager clipboardManager =
++                    mContext.getSystemService(ClipboardManager.class);
++            if (clipboardManager == null) {
++                recordAudit("action_rejected", taskId, capability, "deny",
++                        actionRequestJson, "clipboard_unavailable");
++                return actionResultJson("action.denied.clipboard_unavailable", taskId,
++                        actionRequestJson, capability, "clipboard_unavailable");
++            }
++
++            final ClipData clip;
++            final long token = Binder.clearCallingIdentity();
++            try {
++                clip = clipboardManager.getPrimaryClip();
++            } finally {
++                Binder.restoreCallingIdentity(token);
++            }
++            if (clip == null || clip.getItemCount() <= 0) {
++                recordAudit("action_rejected", taskId, capability, "deny",
++                        actionRequestJson, "clipboard_empty");
++                return actionResultJson("action.denied.clipboard_empty", taskId,
++                        actionRequestJson, capability, "clipboard_empty");
++            }
++
++            final CharSequence text = clip.getItemAt(0).coerceToText(mContext);
++            if (text == null || text.length() == 0) {
++                recordAudit("action_rejected", taskId, capability, "deny",
++                        actionRequestJson, "clipboard_text_unavailable");
++                return actionResultJson("action.denied.clipboard_text_unavailable", taskId,
++                        actionRequestJson, capability, "clipboard_text_unavailable");
++            }
++
++            final boolean injected = injectText(text.toString());
++            recordAudit(injected ? "action_executed" : "action_rejected", taskId, capability,
++                    injected ? "allow_task_scoped" : "deny", actionRequestJson,
++                    "clipboard_paste");
++            return actionResultJson(injected ? "action.executed" : "action.denied.input_failed",
++                    taskId, actionRequestJson, capability, "clipboard_paste");
++        }
++
+         private String actionResultJson(String state, String taskId, String inputJson,
+                 String capability, String detail) {
+             return actionResultJson(state, taskId, inputJson, capability, detail, null);
+@@ -570,6 +651,12 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                     || "scroll".equals(type) || "type_text".equals(type)) {
+                 return "input.perform";
+             }
++            if ("copy".equals(type)) {
++                return "clipboard.write";
++            }
++            if ("paste".equals(type)) {
++                return "clipboard.read";
++            }
+             return "unknown";
+         }
+ 
+@@ -622,7 +709,9 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             }
+             if ("input.perform".equals(capabilityId)
+                     || "settings.write".equals(capabilityId)
+-                    || "notifications.act".equals(capabilityId)) {
++                    || "notifications.act".equals(capabilityId)
++                    || "clipboard.read".equals(capabilityId)
++                    || "clipboard.write".equals(capabilityId)) {
+                 return "confirmation_required";
+             }
+             if ("messages.send".equals(capabilityId)
+@@ -700,6 +789,20 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return injectInputEvent(down) && injectInputEvent(up);
+         }
+ 
++        private boolean injectText(String text) {
++            final KeyCharacterMap keyCharacterMap =
++                    KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
++            final KeyEvent[] events = keyCharacterMap.getEvents(text.toCharArray());
++            if (events == null) {
++                return false;
++            }
++            boolean injected = true;
++            for (KeyEvent event : events) {
++                injected &= injectInputEvent(event);
++            }
++            return injected;
++        }
++
+         private boolean injectTap(float x, float y, long pressDurationMs) {
+             final long downTime = SystemClock.uptimeMillis();
+             return injectMotion(MotionEvent.ACTION_DOWN, downTime, downTime, x, y)
+-- 
+2.50.1 (Apple Git-155)
+

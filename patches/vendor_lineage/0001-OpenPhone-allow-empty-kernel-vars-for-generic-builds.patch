@@ -1,0 +1,53 @@
+From e604c0fcda5203eb6f8b829aa359165c649be39e Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Tue, 26 May 2026 20:55:00 +0300
+Subject: [PATCH] OpenPhone: allow empty kernel vars for generic builds
+
+Generic bootstrap products do not have a device kernel configuration. The
+Lineage generator plugin should expand known optional kernel variables to empty
+strings instead of leaving them as unresolved `$(...)` expressions that Soong
+then rejects.
+---
+ build/soong/generator/variables.go | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/build/soong/generator/variables.go b/build/soong/generator/variables.go
+index 6740637c..77d7a5f5 100644
+--- a/build/soong/generator/variables.go
++++ b/build/soong/generator/variables.go
+@@ -13,6 +13,9 @@ func lineageExpandVariables(ctx android.ModuleContext, in string) string {
+ 		if lineageVars.IsSet(name) {
+ 			return lineageVars.String(name), nil
+ 		}
++		if isOptionalKernelVariable(name) {
++			return "", nil
++		}
+ 		// This variable is not for us, restore what the original
+ 		// variable string will have looked like for an Expand
+ 		// that comes later.
+@@ -27,3 +30,22 @@ func lineageExpandVariables(ctx android.ModuleContext, in string) string {
+ 
+ 	return out
+ }
++
++func isOptionalKernelVariable(name string) bool {
++	switch name {
++	case "KERNEL_ARCH",
++		"KERNEL_BUILD_OUT_PREFIX",
++		"KERNEL_CROSS_COMPILE",
++		"KERNEL_MAKE_CMD",
++		"KERNEL_MAKE_FLAGS",
++		"KERNEL_PATH",
++		"PATH_OVERRIDE_SOONG",
++		"TARGET_KERNEL_CONFIG",
++		"TARGET_KERNEL_SOURCE",
++		"TARGET_KERNEL_PLATFORM_TARGET",
++		"TARGET_PREBUILT_KERNEL_HEADERS":
++		return true
++	default:
++		return false
++	}
++}
+-- 
+2.50.1
+
