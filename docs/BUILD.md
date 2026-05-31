@@ -111,8 +111,7 @@ Build only the assistant module:
 OPENPHONE_BUILD_GOAL=OpenPhoneAssistant ./scripts/build.sh openphone_arm64
 ```
 
-The script maps `OpenPhoneAssistant` to the generated
-`OpenPhoneAssistant-outputs` target used by this Android branch.
+The assistant module target is `OpenPhoneAssistant`.
 
 Build only the framework service validation target:
 

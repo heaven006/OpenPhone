@@ -12,6 +12,7 @@ required=(
   LICENSE
   LICENSE.noncommercial
   NOTICE
+  PLAN_MAKE_ASSISTANT_WORK.md
   THIRD_PARTY_NOTICES.md
   docs/ARCHITECTURE.md
   docs/BUILD.md
@@ -36,7 +37,25 @@ required=(
   overlay/packages/apps/OpenPhoneAssistant/Android.bp
   overlay/packages/apps/OpenPhoneAssistant/AndroidManifest.xml
   overlay/packages/apps/OpenPhoneAssistant/LICENSE
+  overlay/packages/apps/OpenPhoneAssistant/res/drawable/ic_openphone_tile.xml
+  overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/OpenPhoneNotificationController.java
+  overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/OpenPhoneQuickSettingsTileService.java
+  overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/OpenPhoneTriggerReceiver.java
+  overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/PointerOverlayController.java
   overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/IOpenPhoneAssistant.aidl
+  overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/agent/FrameworkToolExecutor.java
+  overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/model/ModelAdapter.java
+  overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/model/LocalHeuristicModelAdapter.java
+  overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/model/OpenAiRealtimeAdapter.java
+  patches/frameworks_base/0001-OpenPhone-add-agent-manager-framework-service.patch
+  patches/frameworks_base/0002-OpenPhone-add-foreground-context-and-audit-mediation.patch
+  patches/frameworks_base/0003-OpenPhone-add-task-scoped-input-action-execution.patch
+  patches/frameworks_base/0004-OpenPhone-persist-agent-audit-log.patch
+  patches/frameworks_base/0005-OpenPhone-add-pending-action-confirmation-flow.patch
+  patches/frameworks_base/0006-OpenPhone-add-clipboard-action-execution.patch
+  patches/frameworks_base/0007-OpenPhone-add-confirmed-share-action.patch
+  patches/frameworks_base/0008-OpenPhone-add-task-screen-and-pointer-APIs.patch
+  patches/frameworks_base/0009-OpenPhone-add-opt-in-screenshot-payloads.patch
   patches/system_sepolicy/0001-OpenPhone-label-agent-manager-service.patch
 )
 

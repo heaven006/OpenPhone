@@ -52,7 +52,21 @@ This document tracks current implementation evidence against `SPEC.md`.
   request a confirmable action, approve or deny the pending action, and browse
   recent durable audit events from the framework service.
 - JSON contracts for tasks, screen context, action requests, and audit events.
-- Framework integration contract and first seven `frameworks/base` patch sets.
+- Framework integration contract and first nine `frameworks/base` patch sets.
+- Framework `getScreen(...)`, `watchScreen(...)`, `stopTask(...)`, and
+  `getPointerEvents(...)` manager APIs with active-task enforcement.
+- Active screen observation. The framework now gates screen reads on active
+  tasks, returns current foreground/visible activity context, and can return an
+  opt-in downscaled JPEG screenshot payload as base64 from `getScreen(...)`.
+- Pointer-event publishing for tap, long press, swipe, and typing actions.
+- Assistant task console controls for starting/stopping a task, refreshing
+  screen state, running a proof-of-loop agent, navigating Back, requesting a
+  confirmable action, approving/denying pending actions, and refreshing audit.
+- Assistant-owned visible cursor/status overlay for the current task.
+- Persistent assistant notification with start/stop actions.
+- Quick Settings tile for opening/starting the assistant.
+- Model adapter boundary with a local heuristic development adapter and a
+  development OpenAI Responses vision adapter.
 - Build, flash, and scaffold validation scripts.
 - Local JSON/XML/shell scaffold checks.
 - macOS case-sensitive Android build volume helper.
@@ -94,9 +108,18 @@ This document tracks current implementation evidence against `SPEC.md`.
 - Typed framework parcelables for screen context, action requests, policy
   decisions, and audit events. The current Binder contract intentionally uses
   JSON strings while the service boundary is still stabilizing.
-- Full screen understanding service with visible text, UI node hierarchy,
-  screenshots/OCR, notifications, and scoped data minimization. Current
-  framework context is limited to foreground and visible activity metadata.
+- Full screen understanding service with visible text, UI node hierarchy, OCR,
+  notifications, content-provider image references, and scoped data
+  minimization. Current screen observation supports foreground/visible activity
+  metadata and opt-in JPEG screenshot payloads, but not OCR/UI-tree extraction.
+- Production model transport. A development OpenAI Responses vision adapter is
+  physically validated, but it still uses a manually entered in-memory dev API
+  key and direct phone-to-OpenAI HTTPS. A production build still needs a secure
+  broker/key flow, provider abstraction, retry policy, rate limits, and privacy
+  controls.
+- Vision-based action selection. Current OpenAI vision validation can reason
+  over a screenshot and return text, but it does not yet select and execute
+  actions through a bounded planner.
 - Full action execution service for notification actions, app-specific
   integrations, and richer input targeting. Current framework
   action execution supports launcher actions, navigation keys, pointer gestures,
@@ -109,7 +132,8 @@ This document tracks current implementation evidence against `SPEC.md`.
   messaging flow.
 - Settings integration and a dedicated Settings-hosted audit surface. The
   assistant now has a basic audit browser, but Settings does not.
-- SystemUI background task surface.
+- SystemUI background task surface. Current cursor/status affordance is owned
+  by the assistant app, not SystemUI.
 - Remaining SELinux policy for richer action execution and future services.
 - OTA client and release signing.
 - Kernel source publication flow.
@@ -185,6 +209,71 @@ Pixel 9a `tegu` full-product evidence:
     `org.openphone.assistant/.OpenPhoneAssistantService`
   - `monkey -p org.openphone.assistant 1` displays
     `org.openphone.assistant/.MainActivity`
+
+Post-plan implementation evidence on the EC2 Linux build host:
+
+- `./scripts/check.sh` passes after adding the assistant task console,
+  notification trigger, Quick Settings tile, model adapter boundary, cursor
+  overlay, and framework task-screen/pointer APIs.
+- `OPENPHONE_RELEASE=bp4a OPENPHONE_BUILD_GOAL=OpenPhoneAssistant ./scripts/build.sh openphone_tegu`
+  generates:
+  `out/target/product/tegu/system_ext/priv-app/OpenPhoneAssistant/OpenPhoneAssistant.apk`.
+- `OPENPHONE_RELEASE=bp4a OPENPHONE_BUILD_GOAL=MODULES-IN-frameworks-base-services-core ./scripts/build.sh openphone_tegu`
+  validates the new framework manager/service API additions, including the
+  opt-in screenshot payload path.
+
+Post-plan physical Pixel 9a evidence:
+
+- Built fresh target-files and OTA on the EC2 Linux host:
+  `.worktree/artifacts/tegu/openphone_tegu-bp4a-assistant-v1-ota.zip`.
+- OTA SHA-256:
+  `25983a9f3099e9493c94f4d78b2eb81140ad99688493e8a2e3a8dca4cf2096a5`.
+- Validated generated `vendor_kernel_boot.img` DTB before sideload:
+  `dtb size: 1546258`.
+- Sideloaded the OTA to the physical Pixel 9a and booted successfully.
+- Verified over ADB after boot:
+  - `ro.openphone.version=0.1.0-dev`
+  - `ro.lineage.version=23.2-20260531-UNOFFICIAL-tegu`
+  - `service check openphone_agent` reports `found`
+  - `org.openphone.assistant/.OpenPhoneQuickSettingsTileService` is registered
+  - assistant has new `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE`, `INTERNET`,
+    and `RECORD_AUDIO` permissions
+  - persistent OpenPhone notification posts with `Stop` and `Open` actions
+- Verified assistant UI task flow on-device:
+  - `Start` creates a framework task with `screen.read.visible` and
+    `tasks.observe`
+  - `Screen` calls the new `getScreen(...)` framework API and returns
+    `screen.captured.metadata_only` with foreground app/activity metadata
+  - `Run Agent` with goal `settings` executes the local heuristic model loop
+    and opens `com.android.settings/.Settings`
+
+Additional Pixel 9a screenshot and OpenAI evidence:
+
+- Built and sideloaded screenshot-fix OTA:
+  `.worktree/artifacts/tegu/openphone_tegu-openai-vision-test-screenshotfix2-ota.zip`.
+- OTA SHA-256:
+  `65dedb7fe4abad5ca9d4edec4a4e24c54336cb38a3318f84f4eec7e68c2bee40`.
+- Verified `getScreen(..., {"include_screenshot": true})` on the physical
+  Pixel 9a from the assistant `Shot` button.
+- The returned screen payload included a downscaled JPEG screenshot:
+  `width=228`, `height=512`, `quality=65`, and redacted UI display
+  `<base64 chars=24208>`.
+- Fixed screenshot capture permission failure by applying
+  `patches/frameworks_base/0010-OpenPhone-capture-screenshots-as-system-server.patch`.
+- Built and sideloaded background-thread OpenAI OTA:
+  `.worktree/artifacts/tegu/openphone_tegu-openai-bgthread-ota.zip`.
+- OTA SHA-256:
+  `1792d9bcf904146d3de17cf10ecb66e362ca100b19d54ca56b8e1c4cead3a32c`.
+- Fixed `NetworkOnMainThreadException` by running model calls on an assistant
+  background thread.
+- Verified OpenAI Responses vision path on the physical Pixel 9a over Wi-Fi:
+  - `status=model_response`
+  - `provider=openai-responses-vision-dev`
+  - `model=gpt-4.1-mini`
+  - OpenAI response id:
+    `resp_072056aadeb3322d006a1c286f5eb8819fba6ebcf3cd3fed20`
+  - Model output described the visible OpenPhone Assistant screen from the
+    screenshot and suggested a next safe action.
 
 ## Next Engineering Step
 

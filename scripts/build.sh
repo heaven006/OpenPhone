@@ -31,9 +31,6 @@ OPENPHONE_LUNCH_PRODUCT="${target_without_variant%-*}"
 info "Android tree: $OPENPHONE_ANDROID_DIR"
 info "Lunch target: $OPENPHONE_LUNCH_TARGET"
 OPENPHONE_BUILD_GOAL="${OPENPHONE_BUILD_GOAL:-droid}"
-if [[ "$OPENPHONE_BUILD_GOAL" == "OpenPhoneAssistant" ]]; then
-  OPENPHONE_BUILD_GOAL="OpenPhoneAssistant-outputs"
-fi
 info "Build goal: $OPENPHONE_BUILD_GOAL"
 
 cd "$OPENPHONE_ANDROID_DIR"

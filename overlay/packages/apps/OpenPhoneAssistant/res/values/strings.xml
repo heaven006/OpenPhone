@@ -8,4 +8,10 @@
     <string name="permission_read_agent_audit_log">Read OpenPhone agent audit log</string>
     <string name="status_bootstrap">OpenPhone Assistant bootstrap</string>
     <string name="status_detail">Privileged assistant service is installed and starts after boot.</string>
+    <string name="notification_channel_agent">OpenPhone Agent</string>
+    <string name="notification_agent_ready">OpenPhone Assistant ready</string>
+    <string name="notification_agent_active">OpenPhone Agent active</string>
+    <string name="action_start_task">Start task</string>
+    <string name="action_stop_task">Stop</string>
+    <string name="action_open_assistant">Open</string>
 </resources>

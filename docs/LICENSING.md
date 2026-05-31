@@ -45,11 +45,15 @@ business, pilot, proof-of-concept, and white-label uses.
 OpenPhone-owned Android modules should use Soong license metadata with:
 
 ```text
-SPDX-license-identifier-PolyForm-Noncommercial-1.0.0
+legacy_restricted
 ```
 
-Do not mark OpenPhone-owned modules as Apache-2.0, MIT, BSD, or another
-permissive license unless that is an intentional file-specific override.
+Android's Soong license database does not currently define
+`SPDX-license-identifier-PolyForm-Noncommercial-1.0.0` in the target branch.
+Use `legacy_restricted` for module metadata and point `license_text` at the
+module's OpenPhone license file. Do not mark OpenPhone-owned modules as
+Apache-2.0, MIT, BSD, or another permissive license unless that is an
+intentional file-specific override.
 
 ## Upstream Code
 

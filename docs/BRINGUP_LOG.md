@@ -157,3 +157,88 @@ Full product bringup:
     `org.openphone.assistant`.
   - Launching the assistant with `monkey -p org.openphone.assistant 1`
     displayed `org.openphone.assistant/.MainActivity`.
+
+## 2026-05-31: Assistant v1 OTA
+
+- Built and sideloaded:
+  `.worktree/artifacts/tegu/openphone_tegu-bp4a-assistant-v1-ota.zip`.
+- OTA SHA-256:
+  `25983a9f3099e9493c94f4d78b2eb81140ad99688493e8a2e3a8dca4cf2096a5`.
+- Validated generated `vendor_kernel_boot.img` before flashing:
+  `dtb size: 1546258`.
+- Sideload result:
+  `Total xfer: 1.00x`.
+- Verified after boot:
+  - `ro.openphone.version=0.1.0-dev`
+  - `ro.lineage.version=23.2-20260531-UNOFFICIAL-tegu`
+  - `service check openphone_agent` reports `found`
+  - `org.openphone.assistant/.OpenPhoneQuickSettingsTileService` is present
+  - assistant requests/grants `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE`,
+    `INTERNET`, and `RECORD_AUDIO`
+  - persistent OpenPhone notification is posted with `Stop` and `Open`
+    actions
+- Verified assistant flow:
+  - launched `org.openphone.assistant/.MainActivity`
+  - `Start` created a task through `OpenPhoneAgentManagerService`
+  - `Screen` returned `screen.captured.metadata_only` through the new
+    `getScreen(...)` API, including foreground app/activity metadata
+  - `Run Agent` with goal `settings` opened `com.android.settings/.Settings`
+    through the local heuristic model/tool loop
+- Not yet physically validated:
+  - opt-in screenshot payload returned by `getScreen(...,
+    {"include_screenshot": true})`
+  - model vision/realtime transport
+  - arbitrary task completion beyond the local heuristic proof loop
+
+## 2026-05-31: Screenshot and OpenAI Vision Test
+
+- Built and sideloaded screenshot-fix OTA:
+  `.worktree/artifacts/tegu/openphone_tegu-openai-vision-test-screenshotfix2-ota.zip`.
+- OTA SHA-256:
+  `65dedb7fe4abad5ca9d4edec4a4e24c54336cb38a3318f84f4eec7e68c2bee40`.
+- Root cause fixed:
+  - `getScreen(..., {"include_screenshot": true})` initially crashed because
+    screenshot capture still ran with the app caller identity and hit
+    `READ_FRAME_BUFFER`.
+  - Added `patches/frameworks_base/0010-OpenPhone-capture-screenshots-as-system-server.patch`.
+  - The framework now clears/restores Binder identity around
+    `WindowManagerInternal.takeAssistScreenshot(...)`.
+- Physical screenshot payload validation:
+  - Sideload result: `Total xfer: 1.00x`.
+  - Booted successfully to Android.
+  - Assistant `Start` followed by `Shot` returned
+    `screen.captured.screenshot_jpeg_base64`.
+  - Payload included:
+    - `mime_type=image/jpeg`
+    - `encoding=base64`
+    - `width=228`
+    - `height=512`
+    - `quality=65`
+    - redacted UI display showed `<base64 chars=24208>`.
+  - Logcat showed no `FATAL EXCEPTION` and no `READ_FRAME_BUFFER` denial for
+    the screenshot path.
+- Built and sideloaded background-thread OpenAI OTA:
+  `.worktree/artifacts/tegu/openphone_tegu-openai-bgthread-ota.zip`.
+- OTA SHA-256:
+  `1792d9bcf904146d3de17cf10ecb66e362ca100b19d54ca56b8e1c4cead3a32c`.
+- Root cause fixed:
+  - First OpenAI test crashed with `NetworkOnMainThreadException` from
+    `OpenAiRealtimeAdapter.callResponsesApi(...)`.
+  - Moved `Run Agent` model execution to a background thread and posted the
+    redacted result back to the UI thread.
+- Physical OpenAI vision validation:
+  - Sideload result: `Total xfer: 1.00x`.
+  - Booted successfully to Android.
+  - Phone connected to Wi-Fi network `Avi`.
+  - `adb shell ping -c 1 -W 5 api.openai.com` succeeded.
+  - Assistant key field was populated in memory only; no key was committed or
+    documented.
+  - Assistant `Run Agent` with the OpenAI Responses vision test returned:
+    - `status=model_response`
+    - `provider=openai-responses-vision-dev`
+    - `model=gpt-4.1-mini`
+    - `openai_response_id=resp_072056aadeb3322d006a1c286f5eb8819fba6ebcf3cd3fed20`
+  - Model output described the visible OpenPhone Assistant screen and suggested
+    a next safe action.
+  - Logcat showed no `FATAL EXCEPTION`, no `NetworkOnMainThreadException`, and
+    no screenshot permission failure for the successful run.

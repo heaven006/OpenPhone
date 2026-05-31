@@ -1,0 +1,280 @@
+From ef901129673a029eff37e5a580b8989c0627d6a0 Mon Sep 17 00:00:00 2001
+From: OpenPhone <openphone@example.invalid>
+Date: Sun, 31 May 2026 09:13:37 +0000
+Subject: [PATCH] OpenPhone: add task screen and pointer APIs
+
+Change-Id: I65398761f6c90a1331b2ceda05cc21c5da92afe0
+---
+ .../openphone/IOpenPhoneAgentService.aidl     |   4 +
+ .../openphone/OpenPhoneAgentManager.java      |  40 +++++
+ .../OpenPhoneAgentManagerService.java         | 140 ++++++++++++++++++
+ 3 files changed, 184 insertions(+)
+
+diff --git a/core/java/android/openphone/IOpenPhoneAgentService.aidl b/core/java/android/openphone/IOpenPhoneAgentService.aidl
+index 5175c78d6d66..d4d461630942 100644
+--- a/core/java/android/openphone/IOpenPhoneAgentService.aidl
++++ b/core/java/android/openphone/IOpenPhoneAgentService.aidl
+@@ -5,6 +5,10 @@ interface IOpenPhoneAgentService {
+     String getServiceStatus();
+     String startTask(String taskRequestJson);
+     String getScreenContext(String taskId);
++    String getScreen(String taskId, String requestJson);
++    String watchScreen(String taskId, String requestJson);
++    String stopTask(String taskId, String reasonJson);
++    String getPointerEvents(String taskId, int maxEvents);
+     String executeAction(String taskId, String actionRequestJson);
+     String confirmAction(String pendingActionId, boolean approved);
+     String evaluateCapability(String capabilityId);
+diff --git a/core/java/android/openphone/OpenPhoneAgentManager.java b/core/java/android/openphone/OpenPhoneAgentManager.java
+index aff9c157ba3c..94f3e2220eae 100644
+--- a/core/java/android/openphone/OpenPhoneAgentManager.java
++++ b/core/java/android/openphone/OpenPhoneAgentManager.java
+@@ -65,6 +65,46 @@ public final class OpenPhoneAgentManager {
+         }
+     }
+
++    /** @hide */
++    @NonNull
++    public String getScreen(@NonNull String taskId, @NonNull String requestJson) {
++        try {
++            return mService.getScreen(taskId, requestJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String watchScreen(@NonNull String taskId, @NonNull String requestJson) {
++        try {
++            return mService.watchScreen(taskId, requestJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String stopTask(@NonNull String taskId, @NonNull String reasonJson) {
++        try {
++            return mService.stopTask(taskId, reasonJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String getPointerEvents(@NonNull String taskId, int maxEvents) {
++        try {
++            return mService.getPointerEvents(taskId, maxEvents);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
+     /** @hide */
+     @NonNull
+     public String executeAction(@NonNull String taskId, @NonNull String actionRequestJson) {
+diff --git a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+index f1aef8005184..7b5fee3a8645 100644
+--- a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
++++ b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+@@ -98,6 +98,9 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+         private final AtomicFile mAuditFile;
+         private final Object mTaskLock = new Object();
+         private final Map<String, Set<String>> mTaskGrants = new HashMap<>();
++        private final Map<String, String> mTaskStates = new HashMap<>();
++        private final Object mPointerEventLock = new Object();
++        private final ArrayDeque<String> mPointerEvents = new ArrayDeque<>(MAX_AUDIT_EVENTS);
+         private final Object mPendingActionLock = new Object();
+         private final Map<String, PendingAction> mPendingActions = new HashMap<>();
+
+@@ -122,6 +125,7 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             final Set<String> grants = approvedCapabilities(taskRequestJson);
+             synchronized (mTaskLock) {
+                 mTaskGrants.put(taskId, grants);
++                mTaskStates.put(taskId, "active");
+             }
+             recordAudit("task_started", taskId, "tasks.observe", "allow_task_scoped",
+                     taskRequestJson, "grants=" + grants);
+@@ -137,6 +141,57 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return contextJson;
+         }
+
++        @Override
++        public String getScreen(String taskId, String requestJson) {
++            enforceReadScreenContext();
++            if (!isTaskActive(taskId)) {
++                recordAudit("screen_capture_rejected", taskId, "screen.read.visible",
++                        "deny", requestJson, "task_not_active");
++                return screenResultJson("screen.denied.task_not_active", taskId, requestJson,
++                        null);
++            }
++            final String contextJson = screenContextJson(taskId);
++            recordAudit("screen_capture", taskId, "screen.read.visible",
++                    "allow_task_scoped", requestJson, "metadata_only");
++            return screenResultJson("screen.captured.metadata_only", taskId, requestJson,
++                    contextJson);
++        }
++
++        @Override
++        public String watchScreen(String taskId, String requestJson) {
++            enforceReadScreenContext();
++            if (!isTaskActive(taskId)) {
++                recordAudit("screen_watch_rejected", taskId, "screen.read.visible",
++                        "deny", requestJson, "task_not_active");
++                return screenResultJson("screen.denied.task_not_active", taskId, requestJson,
++                        null);
++            }
++            recordAudit("screen_watch_started", taskId, "screen.read.visible",
++                    "allow_task_scoped", requestJson, "metadata_only");
++            return screenResultJson("screen.watch.metadata_only", taskId, requestJson,
++                    screenContextJson(taskId));
++        }
++
++        @Override
++        public String stopTask(String taskId, String reasonJson) {
++            enforceManageTasks();
++            synchronized (mTaskLock) {
++                if (!mTaskStates.containsKey(taskId)) {
++                    return taskStopJson("task.denied.unknown", taskId, reasonJson);
++                }
++                mTaskStates.put(taskId, "stopped");
++            }
++            recordAudit("task_stopped", taskId, "tasks.observe", "allow_task_scoped",
++                    reasonJson, null);
++            return taskStopJson("task.stopped", taskId, reasonJson);
++        }
++
++        @Override
++        public String getPointerEvents(String taskId, int maxEvents) {
++            enforceReadAuditLog();
++            return pointerEventsJson(taskId, maxEvents);
++        }
++
+         @Override
+         public String executeAction(String taskId, String actionRequestJson) {
+             enforcePerformDeviceAction();
+@@ -398,6 +453,7 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+
+             final boolean injected = injectTap(x, y, longPress ? DEFAULT_LONG_PRESS_MS : 0);
+             final String detail = (longPress ? "long_press" : "tap") + ":" + x + "," + y;
++            recordPointerEvent(taskId, longPress ? "long_press" : "tap_ripple", detail);
+             recordAudit(injected ? "action_executed" : "action_rejected", taskId, capability,
+                     injected ? "allow_task_scoped" : "deny", actionRequestJson, detail);
+             return actionResultJson(injected ? "action.executed" : "action.denied.input_failed",
+@@ -430,6 +486,7 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+
+             final boolean injected = injectSwipe(startX, startY, endX, endY, DEFAULT_SWIPE_MS);
+             final String detail = "scroll:" + startX + "," + startY + "->" + endX + "," + endY;
++            recordPointerEvent(taskId, "swipe_trail", detail);
+             recordAudit(injected ? "action_executed" : "action_rejected", taskId, capability,
+                     injected ? "allow_task_scoped" : "deny", actionRequestJson, detail);
+             return actionResultJson(injected ? "action.executed" : "action.denied.input_failed",
+@@ -460,6 +517,7 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             for (KeyEvent event : events) {
+                 injected &= injectInputEvent(event);
+             }
++            recordPointerEvent(taskId, "typing_indicator", "type_text");
+             recordAudit(injected ? "action_executed" : "action_rejected", taskId, capability,
+                     injected ? "allow_task_scoped" : "deny", actionRequestJson, "type_text");
+             return actionResultJson(injected ? "action.executed" : "action.denied.input_failed",
+@@ -577,6 +635,37 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return actionResultJson(state, taskId, inputJson, capability, detail, null);
+         }
+
++        private String screenResultJson(String state, String taskId, String requestJson,
++                String contextJson) {
++            JSONObject json = new JSONObject();
++            try {
++                json.put("state", state);
++                json.put("task_id", taskId);
++                json.put("request", requestJson);
++                json.put("timestamp_ms", System.currentTimeMillis());
++                json.put("screenshot_ref", JSONObject.NULL);
++                json.put("capture_mode", "metadata_only");
++                json.put("source", "system_server.openphone_agent");
++                json.put("context", contextJson == null ? JSONObject.NULL : new JSONObject(contextJson));
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++            return json.toString();
++        }
++
++        private String taskStopJson(String state, String taskId, String reasonJson) {
++            JSONObject json = new JSONObject();
++            try {
++                json.put("state", state);
++                json.put("task_id", taskId);
++                json.put("reason", reasonJson);
++                json.put("source", "system_server.openphone_agent");
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++            return json.toString();
++        }
++
+         private String actionResultJson(String state, String taskId, String inputJson,
+                 String capability, String detail, String pendingActionId) {
+             JSONObject json = new JSONObject();
+@@ -818,6 +907,57 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return json;
+         }
+
++        private void recordPointerEvent(String taskId, String event, String detail) {
++            JSONObject json = new JSONObject();
++            try {
++                json.put("task_id", taskId);
++                json.put("event", event);
++                json.put("detail", detail);
++                json.put("timestamp_ms", System.currentTimeMillis());
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++            synchronized (mPointerEventLock) {
++                while (mPointerEvents.size() >= MAX_AUDIT_EVENTS) {
++                    mPointerEvents.removeFirst();
++                }
++                mPointerEvents.addLast(json.toString());
++            }
++        }
++
++        private String pointerEventsJson(String taskId, int maxEvents) {
++            final JSONArray events = new JSONArray();
++            final int boundedMax = Math.max(1, Math.min(maxEvents, MAX_AUDIT_EVENTS));
++            synchronized (mPointerEventLock) {
++                final ArrayList<String> copy = new ArrayList<>(mPointerEvents);
++                final int start = Math.max(0, copy.size() - boundedMax);
++                for (int i = start; i < copy.size(); i++) {
++                    try {
++                        JSONObject event = new JSONObject(copy.get(i));
++                        if (taskId == null || taskId.equals(event.optString("task_id"))) {
++                            events.put(event);
++                        }
++                    } catch (JSONException ignored) {
++                    }
++                }
++            }
++            JSONObject json = new JSONObject();
++            try {
++                json.put("task_id", taskId);
++                json.put("events", events);
++                json.put("source", "system_server.openphone_agent");
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++            return json.toString();
++        }
++
++        private boolean isTaskActive(String taskId) {
++            synchronized (mTaskLock) {
++                return "active".equals(mTaskStates.get(taskId));
++            }
++        }
++
+         private boolean injectKey(int keyCode) {
+             final long now = SystemClock.uptimeMillis();
+             final KeyEvent down = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode,
+--
+2.43.0

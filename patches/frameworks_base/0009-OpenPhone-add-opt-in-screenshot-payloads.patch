@@ -1,0 +1,250 @@
+[detached HEAD 0661c6eb7ab4] OpenPhone: add opt-in screenshot payloads
+ 1 file changed, 153 insertions(+), 4 deletions(-)
+From 0661c6eb7ab43ab7ca25dd1879e88808396fd3ed Mon Sep 17 00:00:00 2001
+From: OpenPhone <openphone@example.invalid>
+Date: Sun, 31 May 2026 09:29:58 +0000
+Subject: [PATCH] OpenPhone: add opt-in screenshot payloads
+
+Change-Id: Id31d6c379ef37bd2bb5f9bfee800adccbb6f980f
+---
+ .../OpenPhoneAgentManagerService.java         | 157 +++++++++++++++++-
+ 1 file changed, 153 insertions(+), 4 deletions(-)
+
+diff --git a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+index 7b5fee3a8645..ccb60025e40d 100644
+--- a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
++++ b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+@@ -22,6 +22,7 @@ import android.content.ClipboardManager;
+ import android.content.Context;
+ import android.content.ComponentName;
+ import android.content.Intent;
++import android.graphics.Bitmap;
+ import android.hardware.input.InputManager;
+ import android.openphone.IOpenPhoneAgentService;
+ import android.os.Binder;
+@@ -29,23 +30,27 @@ import android.os.Environment;
+ import android.os.SystemClock;
+ import android.os.UserHandle;
+ import android.util.AtomicFile;
++import android.util.Base64;
+ import android.util.Slog;
+ import android.view.Display;
+ import android.view.InputDevice;
+ import android.view.KeyCharacterMap;
+ import android.view.KeyEvent;
+ import android.view.MotionEvent;
++import android.window.ScreenCaptureInternal.ScreenshotHardwareBuffer;
+
+ import com.android.server.LocalServices;
+ import com.android.server.SystemService;
+ import com.android.server.wm.ActivityAssistInfo;
+ import com.android.server.wm.ActivityTaskManagerInternal;
++import com.android.server.wm.WindowManagerInternal;
+
+ import org.json.JSONArray;
+ import org.json.JSONException;
+ import org.json.JSONObject;
+
+ import java.io.File;
++import java.io.ByteArrayOutputStream;
+ import java.io.FileOutputStream;
+ import java.io.IOException;
+ import java.nio.charset.StandardCharsets;
+@@ -91,6 +96,8 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+         private static final int MAX_PENDING_ACTIONS = 50;
+         private static final long DEFAULT_LONG_PRESS_MS = 500;
+         private static final long DEFAULT_SWIPE_MS = 250;
++        private static final int DEFAULT_SCREENSHOT_QUALITY = 70;
++        private static final int DEFAULT_SCREENSHOT_MAX_DIMENSION = 720;
+
+         private final Context mContext;
+         private final Object mAuditLock = new Object();
+@@ -151,10 +158,13 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                         null);
+             }
+             final String contextJson = screenContextJson(taskId);
++            final ScreenPayload screenPayload = captureScreenPayload(requestJson);
++            final String state = screenPayload.hasScreenshot()
++                    ? "screen.captured.screenshot_jpeg_base64"
++                    : "screen.captured.metadata_only";
+             recordAudit("screen_capture", taskId, "screen.read.visible",
+-                    "allow_task_scoped", requestJson, "metadata_only");
+-            return screenResultJson("screen.captured.metadata_only", taskId, requestJson,
+-                    contextJson);
++                    "allow_task_scoped", requestJson, screenPayload.auditDetail());
++            return screenResultJson(state, taskId, requestJson, contextJson, screenPayload);
+         }
+
+         @Override
+@@ -637,6 +647,11 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+
+         private String screenResultJson(String state, String taskId, String requestJson,
+                 String contextJson) {
++            return screenResultJson(state, taskId, requestJson, contextJson, ScreenPayload.none());
++        }
++
++        private String screenResultJson(String state, String taskId, String requestJson,
++                String contextJson, ScreenPayload screenPayload) {
+             JSONObject json = new JSONObject();
+             try {
+                 json.put("state", state);
+@@ -644,15 +659,94 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                 json.put("request", requestJson);
+                 json.put("timestamp_ms", System.currentTimeMillis());
+                 json.put("screenshot_ref", JSONObject.NULL);
+-                json.put("capture_mode", "metadata_only");
++                json.put("capture_mode", screenPayload.captureMode);
+                 json.put("source", "system_server.openphone_agent");
+                 json.put("context", contextJson == null ? JSONObject.NULL : new JSONObject(contextJson));
++                if (screenPayload.hasScreenshot()) {
++                    json.put("screenshot", screenPayload.toJson());
++                } else if (screenPayload.error != null) {
++                    json.put("screenshot_error", screenPayload.error);
++                }
+             } catch (JSONException e) {
+                 throw new IllegalStateException(e);
+             }
+             return json.toString();
+         }
+
++        private ScreenPayload captureScreenPayload(String requestJson) {
++            final JSONObject request = parseJsonObject(requestJson);
++            if (!request.optBoolean("include_screenshot", false)) {
++                return ScreenPayload.none();
++            }
++            final int maxDimension = Math.max(160, Math.min(1080,
++                    request.optInt("max_dimension", DEFAULT_SCREENSHOT_MAX_DIMENSION)));
++            final int quality = Math.max(30, Math.min(90,
++                    request.optInt("quality", DEFAULT_SCREENSHOT_QUALITY)));
++            final WindowManagerInternal windowManager = LocalServices.getService(
++                    WindowManagerInternal.class);
++            if (windowManager == null) {
++                return ScreenPayload.error("window_manager_unavailable");
++            }
++            final ScreenshotHardwareBuffer hardwareBuffer = windowManager.takeAssistScreenshot();
++            if (hardwareBuffer == null || hardwareBuffer.getHardwareBuffer() == null) {
++                return ScreenPayload.error("capture_failed");
++            }
++            if (hardwareBuffer.containsSecureLayers()) {
++                return ScreenPayload.error("secure_layers_present");
++            }
++            final Bitmap hardwareBitmap = hardwareBuffer.asBitmap();
++            if (hardwareBitmap == null) {
++                return ScreenPayload.error("bitmap_unavailable");
++            }
++            Bitmap bitmap = null;
++            Bitmap scaledBitmap = null;
++            try {
++                bitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false);
++                if (bitmap == null) {
++                    return ScreenPayload.error("bitmap_copy_failed");
++                }
++                scaledBitmap = scaleBitmap(bitmap, maxDimension);
++                final ByteArrayOutputStream output = new ByteArrayOutputStream();
++                if (!scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)) {
++                    return ScreenPayload.error("jpeg_encode_failed");
++                }
++                return ScreenPayload.jpegBase64(scaledBitmap.getWidth(), scaledBitmap.getHeight(),
++                        quality, Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP));
++            } finally {
++                if (scaledBitmap != null && scaledBitmap != bitmap) {
++                    scaledBitmap.recycle();
++                }
++                if (bitmap != null) {
++                    bitmap.recycle();
++                }
++                hardwareBitmap.recycle();
++            }
++        }
++
++        private static Bitmap scaleBitmap(Bitmap bitmap, int maxDimension) {
++            final int width = bitmap.getWidth();
++            final int height = bitmap.getHeight();
++            final int longest = Math.max(width, height);
++            if (longest <= maxDimension) {
++                return bitmap;
++            }
++            final float scale = (float) maxDimension / (float) longest;
++            final int targetWidth = Math.max(1, Math.round(width * scale));
++            final int targetHeight = Math.max(1, Math.round(height * scale));
++            return Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true);
++        }
++
++        private static JSONObject parseJsonObject(String rawJson) {
++            if (rawJson == null || rawJson.isEmpty()) {
++                return new JSONObject();
++            }
++            try {
++                return new JSONObject(rawJson);
++            } catch (JSONException e) {
++                return new JSONObject();
++            }
++        }
++
+         private String taskStopJson(String state, String taskId, String reasonJson) {
+             JSONObject json = new JSONObject();
+             try {
+@@ -1170,6 +1264,61 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             }
+         }
+
++        private static final class ScreenPayload {
++            final String captureMode;
++            final String mimeType;
++            final int width;
++            final int height;
++            final int quality;
++            final String base64;
++            final String error;
++
++            private ScreenPayload(String captureMode, String mimeType, int width, int height,
++                    int quality, String base64, String error) {
++                this.captureMode = captureMode;
++                this.mimeType = mimeType;
++                this.width = width;
++                this.height = height;
++                this.quality = quality;
++                this.base64 = base64;
++                this.error = error;
++            }
++
++            static ScreenPayload none() {
++                return new ScreenPayload("metadata_only", null, 0, 0, 0, null, null);
++            }
++
++            static ScreenPayload error(String error) {
++                return new ScreenPayload("metadata_only", null, 0, 0, 0, null, error);
++            }
++
++            static ScreenPayload jpegBase64(int width, int height, int quality, String base64) {
++                return new ScreenPayload("screenshot_jpeg_base64", "image/jpeg", width, height,
++                        quality, base64, null);
++            }
++
++            boolean hasScreenshot() {
++                return base64 != null;
++            }
++
++            String auditDetail() {
++                if (hasScreenshot()) {
++                    return captureMode + ":" + width + "x" + height;
++                }
++                return error == null ? captureMode : captureMode + ":" + error;
++            }
++
++            JSONObject toJson() throws JSONException {
++                return new JSONObject()
++                        .put("mime_type", mimeType)
++                        .put("encoding", "base64")
++                        .put("width", width)
++                        .put("height", height)
++                        .put("quality", quality)
++                        .put("data", base64);
++            }
++        }
++
+         private static final class PendingAction {
+             final String taskId;
+             final String actionRequestJson;
+--
+2.43.0

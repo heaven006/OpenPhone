@@ -19,6 +19,7 @@ public final class OpenPhoneBootReceiver extends BroadcastReceiver {
 
         Intent serviceIntent = new Intent(context, OpenPhoneAssistantService.class);
         context.startService(serviceIntent);
+        OpenPhoneNotificationController.showReady(context);
         Log.i(TAG, "Started OpenPhone assistant service for " + action);
     }
 }

@@ -19,6 +19,8 @@ public final class OpenPhoneAssistantService extends Service {
     private static final String TAG = "OpenPhoneAssistant";
 
     private OpenPhoneAgentManager mAgentManager;
+    private PointerOverlayController mPointerOverlayController;
+    private String mNotificationTaskId;
 
     private final PolicyEngine mPolicyEngine = new PolicyEngine();
     private final AuditLog mAuditLog = new AuditLog(TAG);
@@ -91,17 +93,72 @@ public final class OpenPhoneAssistantService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        mPointerOverlayController = new PointerOverlayController(this);
         mAgentManager = getSystemService(OpenPhoneAgentManager.class);
         if (mAgentManager == null) {
             Log.w(TAG, "OpenPhone framework service is not available");
+            OpenPhoneNotificationController.showReady(this);
             return;
         }
         Log.i(TAG, "OpenPhone framework service status: " + mAgentManager.getServiceStatus());
         Log.i(TAG, "OpenPhone assistant service created");
+        OpenPhoneNotificationController.showReady(this);
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        String action = intent != null ? intent.getAction() : null;
+        if (OpenPhoneNotificationController.ACTION_START.equals(action)) {
+            mNotificationTaskId = startNotificationTask();
+            mPointerOverlayController.show(mNotificationTaskId);
+            OpenPhoneNotificationController.showActive(this, mNotificationTaskId);
+            return START_STICKY;
+        }
+        if (OpenPhoneNotificationController.ACTION_STOP.equals(action)) {
+            stopNotificationTask();
+            return START_STICKY;
+        }
+        OpenPhoneNotificationController.showReady(this);
+        return START_STICKY;
     }
 
     @Override
     public IBinder onBind(Intent intent) {
         return mBinder;
+    }
+
+    private String startNotificationTask() {
+        if (mAgentManager == null) {
+            return null;
+        }
+        String response = mAgentManager.startTask("{"
+                + "\"goal\":\"Notification-triggered OpenPhone task\","
+                + "\"user_visible\":true,"
+                + "\"background_allowed\":false,"
+                + "\"approved_capabilities\":[\"screen.read.visible\",\"tasks.observe\"]"
+                + "}");
+        int marker = response.indexOf("\"task_id\"");
+        if (marker < 0) {
+            return null;
+        }
+        int colon = response.indexOf(':', marker);
+        int firstQuote = response.indexOf('"', colon + 1);
+        int secondQuote = response.indexOf('"', firstQuote + 1);
+        if (firstQuote < 0 || secondQuote < 0) {
+            return null;
+        }
+        return response.substring(firstQuote + 1, secondQuote);
+    }
+
+    private void stopNotificationTask() {
+        if (mAgentManager != null && mNotificationTaskId != null) {
+            mAgentManager.stopTask(mNotificationTaskId,
+                    "{\"reason\":\"user_stopped_from_notification\"}");
+        }
+        mNotificationTaskId = null;
+        if (mPointerOverlayController != null) {
+            mPointerOverlayController.hide();
+        }
+        OpenPhoneNotificationController.showReady(this);
     }
 }
