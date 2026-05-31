@@ -274,6 +274,17 @@ Additional Pixel 9a screenshot and OpenAI evidence:
     `resp_072056aadeb3322d006a1c286f5eb8819fba6ebcf3cd3fed20`
   - Model output described the visible OpenPhone Assistant screen from the
     screenshot and suggested a next safe action.
+- Built and sideloaded agent-loop OTA:
+  `.worktree/artifacts/tegu/openphone_tegu-agent-loop-ota.zip`.
+- OTA SHA-256:
+  `4839a81c151f2bbff1c3218389c69f2e405196e8db201b0e834e684f98b82016`.
+- Verified closed-loop model/tool execution on the physical Pixel 9a:
+  - goal: `Open Settings and finish when Settings is visible`
+  - model step 1 selected `open_app`
+  - framework executed `apps.launch` for `com.android.settings`
+  - model step 2 saw `foreground_app=com.android.settings`
+  - model step 2 selected `finish_task`
+  - final status: `task.finished`
 
 ## Next Engineering Step
 

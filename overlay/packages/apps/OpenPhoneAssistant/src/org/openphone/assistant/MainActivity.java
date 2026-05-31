@@ -72,6 +72,7 @@ public final class MainActivity extends Activity {
         mInputGrant = new CheckBox(this);
         mInputGrant.setText("Approve input.perform for this task");
         mInputGrant.setTextColor(getColor(R.color.openphone_text_primary));
+        mInputGrant.setChecked(true);
         root.addView(mInputGrant);
 
         mUseRealtime = new CheckBox(this);
@@ -321,6 +322,7 @@ public final class MainActivity extends Activity {
                     @Override
                     public String callTool(String toolName, String argumentsJson) {
                         try {
+                            movePointerFromTool(toolName, new JSONObject(argumentsJson));
                             return toolExecutor.execute(taskId, toolName,
                                     new JSONObject(argumentsJson));
                         } catch (JSONException e) {
@@ -368,6 +370,23 @@ public final class MainActivity extends Activity {
             }
         } catch (JSONException ignored) {
         }
+    }
+
+    private void movePointerFromTool(String toolName, JSONObject arguments) {
+        if (!"tap".equals(toolName) && !"long_press".equals(toolName)
+                && !"swipe".equals(toolName)) {
+            return;
+        }
+        final float x = (float) arguments.optDouble("x",
+                arguments.optDouble("end_x", arguments.optDouble("start_x", 0)));
+        final float y = (float) arguments.optDouble("y",
+                arguments.optDouble("end_y", arguments.optDouble("start_y", 0)));
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                mPointerOverlayController.pointerMove(x, y);
+            }
+        });
     }
 
     private static String parseString(String json, String key) {

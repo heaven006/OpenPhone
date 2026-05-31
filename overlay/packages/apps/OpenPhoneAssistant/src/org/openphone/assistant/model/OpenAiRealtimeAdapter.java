@@ -16,6 +16,7 @@ import org.json.JSONObject;
 public final class OpenAiRealtimeAdapter implements ModelAdapter {
     private static final String MODEL = "gpt-4.1-mini";
     private static final String RESPONSES_URL = "https://api.openai.com/v1/responses";
+    private static final int MAX_STEPS = 6;
 
     private final String mApiKey;
 
@@ -34,46 +35,96 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
             return unavailable("missing_dev_api_key");
         }
 
-        String screen = executor.callTool("get_screen",
-                "{\"include_screenshot\":true,\"include_activity\":true,"
-                        + "\"max_dimension\":512,\"quality\":65}");
+        JSONArray steps = new JSONArray();
         try {
-            JSONObject screenJson = new JSONObject(screen);
-            JSONObject screenshot = screenJson.optJSONObject("screenshot");
-            if (screenshot == null || screenshot.optString("data").isEmpty()) {
-                return new JSONObject()
-                        .put("status", "screen_capture_failed")
-                        .put("provider", name())
-                        .put("screen", redactScreenshot(screenJson))
-                        .put("screenshot_error", screenJson.optString("screenshot_error"))
-                        .toString(2);
-            }
+            for (int step = 1; step <= MAX_STEPS; step++) {
+                String screen = executor.callTool("get_screen",
+                        "{\"include_screenshot\":true,\"include_activity\":true,"
+                                + "\"max_dimension\":512,\"quality\":65}");
+                JSONObject screenJson = new JSONObject(screen);
+                JSONObject screenshot = screenJson.optJSONObject("screenshot");
+                if (screenshot == null || screenshot.optString("data").isEmpty()) {
+                    return new JSONObject()
+                            .put("status", "screen_capture_failed")
+                            .put("provider", name())
+                            .put("steps", steps)
+                            .put("screen", redactScreenshot(screenJson))
+                            .put("screenshot_error", screenJson.optString("screenshot_error"))
+                            .toString(2);
+                }
 
-            JSONObject response = callResponsesApi(userGoal, screenJson, screenshot);
-            return new JSONObject()
-                    .put("status", "model_response")
-                    .put("provider", name())
-                    .put("model", MODEL)
-                    .put("screen", redactScreenshot(screenJson))
-                    .put("openai_response_id", response.optString("id"))
-                    .put("openai_output_text", extractOutputText(response))
-                    .toString(2);
+                JSONObject response = callResponsesApi(userGoal, steps, screenJson, screenshot);
+                String outputText = extractOutputText(response);
+                JSONObject decision = parseDecision(outputText);
+                JSONObject stepJson = new JSONObject()
+                        .put("step", step)
+                        .put("openai_response_id", response.optString("id"))
+                        .put("thought", decision.optString("thought"))
+                        .put("tool", decision.optString("tool"))
+                        .put("arguments", decision.optJSONObject("arguments") == null
+                                ? new JSONObject() : decision.optJSONObject("arguments"))
+                        .put("screen", redactScreenshot(new JSONObject(screenJson.toString())));
+                steps.put(stepJson);
+
+                String toolName = decision.optString("tool", "");
+                JSONObject arguments = decision.optJSONObject("arguments");
+                if (arguments == null) {
+                    arguments = new JSONObject();
+                }
+
+                if ("finish_task".equals(toolName)) {
+                    String toolResult = executor.callTool(toolName, arguments.toString());
+                    stepJson.put("tool_result", toolResult);
+                    return result("task.finished", userGoal, steps);
+                }
+                if ("fail_task".equals(toolName)) {
+                    String toolResult = executor.callTool(toolName, arguments.toString());
+                    stepJson.put("tool_result", toolResult);
+                    return result("task.failed", userGoal, steps);
+                }
+                if (!isAllowedTool(toolName)) {
+                    stepJson.put("tool_result", errorJson("unknown_model_tool:" + toolName));
+                    return result("agent.blocked", userGoal, steps);
+                }
+
+                String toolResult = executor.callTool(toolName, arguments.toString());
+                stepJson.put("tool_result", toolResult);
+                sleepAfterAction();
+            }
+            return result("step_limit_reached", userGoal, steps);
         } catch (JSONException e) {
-            return error("json_error", e.getMessage(), screen);
+            return error("json_error", e.getMessage(), steps);
         } catch (IOException e) {
-            return error("network_error", e.getMessage(), screen);
+            return error("network_error", e.getMessage(), steps);
         }
     }
 
-    private JSONObject callResponsesApi(String userGoal, JSONObject screenJson, JSONObject screenshot)
-            throws IOException, JSONException {
+    private JSONObject callResponsesApi(String userGoal, JSONArray steps, JSONObject screenJson,
+            JSONObject screenshot) throws IOException, JSONException {
         String mimeType = screenshot.optString("mime_type", "image/jpeg");
         String dataUrl = "data:" + mimeType + ";base64," + screenshot.optString("data");
 
         String prompt = "You are running inside OpenPhone, an experimental Android OS assistant. "
-                + "Inspect the screenshot and screen metadata. Do not click or type yet. "
-                + "Return a concise description of what screen is visible and the next safe "
-                + "action you would take for this user goal.\n\nUser goal: " + userGoal
+                + "You can control the phone by returning exactly one JSON object. "
+                + "Use the screenshot to decide the next action. Keep actions small and safe. "
+                + "If the task is complete, use finish_task. If you are stuck, use fail_task. "
+                + "Do not include markdown.\n\n"
+                + "Allowed JSON schema:\n"
+                + "{\"thought\":\"short reason\",\"tool\":\"open_app|tap|long_press|swipe|"
+                + "type_text|press_key|set_clipboard|paste|share_text|finish_task|fail_task\","
+                + "\"arguments\":{...}}\n\n"
+                + "Tool arguments:\n"
+                + "- open_app: {\"package_or_label\":\"Settings\"}\n"
+                + "- tap/long_press: {\"x\":540,\"y\":1200,\"reason\":\"...\"}\n"
+                + "- swipe: {\"start_x\":540,\"start_y\":1800,\"end_x\":540,\"end_y\":800,"
+                + "\"reason\":\"...\"}\n"
+                + "- type_text/set_clipboard/share_text: {\"text\":\"...\",\"reason\":\"...\"}\n"
+                + "- paste: {\"reason\":\"...\"}\n"
+                + "- press_key: {\"key\":\"back|home|recents\",\"reason\":\"...\"}\n"
+                + "- finish_task: {\"summary\":\"...\"}\n"
+                + "- fail_task: {\"reason\":\"...\"}\n\n"
+                + "User goal: " + userGoal
+                + "\n\nPrevious steps:\n" + steps.toString(2)
                 + "\n\nScreen metadata without image bytes:\n"
                 + redactScreenshot(new JSONObject(screenJson.toString())).toString(2);
 
@@ -92,7 +143,7 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                         .put(new JSONObject()
                                 .put("role", "user")
                                 .put("content", content)))
-                .put("max_output_tokens", 400);
+                .put("max_output_tokens", 500);
 
         HttpURLConnection connection = (HttpURLConnection) new URL(RESPONSES_URL).openConnection();
         connection.setConnectTimeout(15000);
@@ -116,6 +167,43 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
             throw new IOException("OpenAI HTTP " + statusCode + ": " + summarizeError(responseBody));
         }
         return new JSONObject(responseBody);
+    }
+
+    private static JSONObject parseDecision(String outputText) throws JSONException {
+        String text = outputText == null ? "" : outputText.trim();
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            return new JSONObject()
+                    .put("thought", "Model did not return JSON")
+                    .put("tool", "fail_task")
+                    .put("arguments", new JSONObject().put("reason", text));
+        }
+        JSONObject decision = new JSONObject(text.substring(start, end + 1));
+        if (!decision.has("arguments") || decision.optJSONObject("arguments") == null) {
+            decision.put("arguments", new JSONObject());
+        }
+        return decision;
+    }
+
+    private static boolean isAllowedTool(String toolName) {
+        return "open_app".equals(toolName)
+                || "tap".equals(toolName)
+                || "long_press".equals(toolName)
+                || "swipe".equals(toolName)
+                || "type_text".equals(toolName)
+                || "press_key".equals(toolName)
+                || "set_clipboard".equals(toolName)
+                || "paste".equals(toolName)
+                || "share_text".equals(toolName);
+    }
+
+    private static void sleepAfterAction() {
+        try {
+            Thread.sleep(1200);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static String readAll(InputStream inputStream) throws IOException {
@@ -207,22 +295,30 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
         }
     }
 
-    private static String error(String status, String reason, String screen) {
+    private static String result(String status, String userGoal, JSONArray steps) throws JSONException {
+        return new JSONObject()
+                .put("status", status)
+                .put("provider", "openai_responses")
+                .put("model", MODEL)
+                .put("goal", userGoal == null ? "" : userGoal)
+                .put("steps", steps)
+                .toString(2);
+    }
+
+    private static String error(String status, String reason, JSONArray steps) {
         try {
-            JSONObject result = new JSONObject()
+            return new JSONObject()
                     .put("status", status)
                     .put("provider", "openai_responses")
-                    .put("reason", reason == null ? "" : reason);
-            if (screen != null && !screen.isEmpty()) {
-                try {
-                    result.put("screen", redactScreenshot(new JSONObject(screen)));
-                } catch (JSONException ignored) {
-                    result.put("screen", screen);
-                }
-            }
-            return result.toString(2);
+                    .put("reason", reason == null ? "" : reason)
+                    .put("steps", steps)
+                    .toString(2);
         } catch (JSONException e) {
             return "{\"status\":\"error\"}";
         }
+    }
+
+    private static String errorJson(String reason) throws JSONException {
+        return new JSONObject().put("status", "error").put("reason", reason).toString();
     }
 }

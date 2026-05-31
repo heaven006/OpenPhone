@@ -242,3 +242,38 @@ Full product bringup:
     a next safe action.
   - Logcat showed no `FATAL EXCEPTION`, no `NetworkOnMainThreadException`, and
     no screenshot permission failure for the successful run.
+
+## 2026-05-31: Closed-Loop Agent Test
+
+- Built and sideloaded agent-loop OTA:
+  `.worktree/artifacts/tegu/openphone_tegu-agent-loop-ota.zip`.
+- OTA SHA-256:
+  `4839a81c151f2bbff1c3218389c69f2e405196e8db201b0e834e684f98b82016`.
+- Sideload result:
+  `Total xfer: 1.00x`.
+- Booted successfully to Android.
+- Added a bounded OpenAI Responses action loop:
+  - captures screenshot and activity metadata,
+  - asks the model for exactly one structured JSON tool call,
+  - executes the tool through `OpenPhoneAgentManagerService`,
+  - waits briefly,
+  - captures the next screen,
+  - repeats until `finish_task`, `fail_task`, or step limit.
+- Dev assistant now defaults `input.perform` checked so tap/type/swipe tasks can
+  run on intentionally started dev tasks.
+- Physical test goal:
+  `Open Settings and finish when Settings is visible`.
+- Result:
+  - `status=task.finished`
+  - step 1 model tool: `open_app`
+  - step 1 tool result:
+    `state=action.executed`, `capability=apps.launch`,
+    `detail=com.android.settings`
+  - foreground app after execution:
+    `com.android.settings/.Settings`
+  - step 2 screen context:
+    `foreground_app=com.android.settings`,
+    `activity=com.android.settings/.homepage.SettingsHomepageActivity`
+  - step 2 model tool: `finish_task`
+  - step 2 summary:
+    `Settings app is open and visible.`
