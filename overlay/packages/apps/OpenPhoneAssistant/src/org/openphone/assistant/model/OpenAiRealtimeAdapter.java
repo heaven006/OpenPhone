@@ -16,7 +16,7 @@ import org.json.JSONObject;
 public final class OpenAiRealtimeAdapter implements ModelAdapter {
     private static final String MODEL = "gpt-4.1-mini";
     private static final String RESPONSES_URL = "https://api.openai.com/v1/responses";
-    private static final int MAX_STEPS = 6;
+    private static final int MAX_STEPS = 10;
 
     private final String mApiKey;
 
@@ -110,11 +110,12 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 + "If the task is complete, use finish_task. If you are stuck, use fail_task. "
                 + "Do not include markdown.\n\n"
                 + "Allowed JSON schema:\n"
-                + "{\"thought\":\"short reason\",\"tool\":\"open_app|tap|long_press|swipe|"
+                + "{\"thought\":\"short reason\",\"tool\":\"open_app|open_url|tap|long_press|swipe|"
                 + "type_text|press_key|set_clipboard|paste|share_text|finish_task|fail_task\","
                 + "\"arguments\":{...}}\n\n"
                 + "Tool arguments:\n"
-                + "- open_app: {\"package_or_label\":\"Settings\"}\n"
+                + "- open_app: {\"package_or_label\":\"Settings|Browser|org.lineageos.jelly\"}\n"
+                + "- open_url: {\"url\":\"https://example.com\"}\n"
                 + "- tap/long_press: {\"x\":540,\"y\":1200,\"reason\":\"...\"}\n"
                 + "- swipe: {\"start_x\":540,\"start_y\":1800,\"end_x\":540,\"end_y\":800,"
                 + "\"reason\":\"...\"}\n"
@@ -123,6 +124,13 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 + "- press_key: {\"key\":\"back|home|recents\",\"reason\":\"...\"}\n"
                 + "- finish_task: {\"summary\":\"...\"}\n"
                 + "- fail_task: {\"reason\":\"...\"}\n\n"
+                + "For app downloads, prefer an already-installed app store if visible. "
+                + "Use open_url for exact official download URLs instead of manually typing. "
+                + "If no app store is installed, use Browser and official websites only. "
+                + "If the official website only offers an app store link and that store is not "
+                + "installed, finish_task with that explanation instead of continuing to scroll. "
+                + "Do not bypass Android install-security prompts, enter credentials, or "
+                + "accept payments/subscriptions.\n\n"
                 + "User goal: " + userGoal
                 + "\n\nPrevious steps:\n" + steps.toString(2)
                 + "\n\nScreen metadata without image bytes:\n"
@@ -188,6 +196,7 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
 
     private static boolean isAllowedTool(String toolName) {
         return "open_app".equals(toolName)
+                || "open_url".equals(toolName)
                 || "tap".equals(toolName)
                 || "long_press".equals(toolName)
                 || "swipe".equals(toolName)

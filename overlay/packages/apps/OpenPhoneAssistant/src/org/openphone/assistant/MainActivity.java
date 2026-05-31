@@ -311,7 +311,7 @@ public final class MainActivity extends Activity {
         final boolean useRealtime = mUseRealtime.isChecked();
         final String apiKey = mApiKeyInput.getText().toString();
         mTaskView.setText("Agent running...");
-        FrameworkToolExecutor toolExecutor = new FrameworkToolExecutor(mAgentManager);
+        FrameworkToolExecutor toolExecutor = new FrameworkToolExecutor(this, mAgentManager);
         ModelAdapter adapter = useRealtime
                 ? new OpenAiRealtimeAdapter(apiKey)
                 : new LocalHeuristicModelAdapter();

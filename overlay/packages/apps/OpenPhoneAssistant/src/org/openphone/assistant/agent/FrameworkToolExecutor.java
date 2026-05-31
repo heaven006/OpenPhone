@@ -1,14 +1,19 @@
 package org.openphone.assistant.agent;
 
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.openphone.OpenPhoneAgentManager;
 
 import org.json.JSONException;
 import org.json.JSONObject;
 
 public final class FrameworkToolExecutor {
+    private final Context mContext;
     private final OpenPhoneAgentManager mAgentManager;
 
-    public FrameworkToolExecutor(OpenPhoneAgentManager agentManager) {
+    public FrameworkToolExecutor(Context context, OpenPhoneAgentManager agentManager) {
+        mContext = context;
         mAgentManager = agentManager;
     }
 
@@ -30,6 +35,8 @@ public final class FrameworkToolExecutor {
                             .put("package", requestedPackage)
                             .put("label", arguments.optString("label",
                                     arguments.optString("package_or_label"))).toString());
+                case "open_url":
+                    return openUrl(arguments.optString("url"));
                 case "tap":
                     return mAgentManager.executeAction(taskId, action("tap")
                             .put("target", point(arguments.optDouble("x"), arguments.optDouble("y")))
@@ -78,6 +85,31 @@ public final class FrameworkToolExecutor {
         }
     }
 
+    private String openUrl(String url) throws JSONException {
+        if (mContext == null) {
+            return error("context_unavailable");
+        }
+        if (url == null || url.trim().isEmpty()) {
+            return error("missing_url");
+        }
+
+        String normalizedUrl = url.trim();
+        if (!normalizedUrl.startsWith("http://") && !normalizedUrl.startsWith("https://")) {
+            normalizedUrl = "https://" + normalizedUrl;
+        }
+
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(normalizedUrl));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.setPackage("org.lineageos.jelly");
+        try {
+            mContext.startActivity(intent);
+        } catch (RuntimeException e) {
+            return error("open_url_failed:" + e.getClass().getSimpleName());
+        }
+
+        return status("action.executed", "open_url:" + normalizedUrl);
+    }
+
     private static JSONObject action(String type) throws JSONException {
         return new JSONObject().put("type", type);
     }
@@ -96,6 +128,17 @@ public final class FrameworkToolExecutor {
         }
         if ("settings".equalsIgnoreCase(value)) {
             return "com.android.settings";
+        }
+        if ("browser".equalsIgnoreCase(value) || "web".equalsIgnoreCase(value)
+                || "jelly".equalsIgnoreCase(value)) {
+            return "org.lineageos.jelly";
+        }
+        if ("play store".equalsIgnoreCase(value) || "google play".equalsIgnoreCase(value)
+                || "google play store".equalsIgnoreCase(value)) {
+            return "com.android.vending";
+        }
+        if ("spotify".equalsIgnoreCase(value)) {
+            return "com.spotify.music";
         }
         if ("assistant".equalsIgnoreCase(value) || "openphone".equalsIgnoreCase(value)) {
             return "org.openphone.assistant";
