@@ -12,8 +12,9 @@ required=(
   LICENSE
   LICENSE.noncommercial
   NOTICE
-  PLAN_MAKE_ASSISTANT_WORK.md
+  SECURITY.md
   THIRD_PARTY_NOTICES.md
+  CHANGELOG.md
   docs/ARCHITECTURE.md
   docs/BUILD.md
   docs/BRINGUP_LOG.md
@@ -22,14 +23,28 @@ required=(
   docs/FRAMEWORK_PLAN.md
   docs/IMPLEMENTATION_STATUS.md
   docs/LICENSING.md
-  docs/V1_AI_PHONE_PLAN.md
+  docs/PLAN.md
+  docs/RELEASE_PROCESS.md
+  docs/ROADMAP.md
+  docs/releases/0.0.1.md
   docs/contracts/action-request.schema.json
   docs/contracts/agent-task.schema.json
   docs/contracts/audit-event.schema.json
   docs/contracts/screen-context.schema.json
+  .github/workflows/ci.yml
+  .github/ISSUE_TEMPLATE/bug_report.md
+  .github/ISSUE_TEMPLATE/feature_request.md
+  .github/pull_request_template.md
   devices/MATRIX.md
   devices/tegu.md
   manifests/openphone.xml
+  scripts/prepare-tegu-dtb.sh
+  scripts/generate-release-manifest.sh
+  scripts/prepare-github-release.sh
+  scripts/validate-release-artifacts.sh
+  scripts/smoke-test-tegu-hardware.sh
+  scripts/verify-tegu-device.sh
+  scripts/verify-tegu-bootchain.sh
   overlay/vendor/openphone/AndroidProducts.mk
   overlay/vendor/openphone/products/openphone_common.mk
   overlay/vendor/openphone/products/openphone_arm64.mk
@@ -38,12 +53,15 @@ required=(
   overlay/packages/apps/OpenPhoneAssistant/AndroidManifest.xml
   overlay/packages/apps/OpenPhoneAssistant/LICENSE
   overlay/packages/apps/OpenPhoneAssistant/res/drawable/ic_openphone_tile.xml
+  overlay/packages/apps/OpenPhoneAssistant/res/xml/openphone_accessibility_service.xml
+  overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/OpenPhoneAccessibilityService.java
   overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/OpenPhoneNotificationController.java
   overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/OpenPhoneQuickSettingsTileService.java
   overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/OpenPhoneTriggerReceiver.java
   overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/PointerOverlayController.java
   overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/IOpenPhoneAssistant.aidl
   overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/agent/FrameworkToolExecutor.java
+  overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/agent/TrajectoryRecorder.java
   overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/model/ModelAdapter.java
   overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/model/LocalHeuristicModelAdapter.java
   overlay/packages/apps/OpenPhoneAssistant/src/org/openphone/assistant/model/OpenAiRealtimeAdapter.java
@@ -56,6 +74,10 @@ required=(
   patches/frameworks_base/0007-OpenPhone-add-confirmed-share-action.patch
   patches/frameworks_base/0008-OpenPhone-add-task-screen-and-pointer-APIs.patch
   patches/frameworks_base/0009-OpenPhone-add-opt-in-screenshot-payloads.patch
+  patches/frameworks_base/0010-OpenPhone-capture-screenshots-as-system-server.patch
+  patches/packages_apps_Settings/0001-OpenPhone-add-About-phone-version-surface.patch
+  patches/packages_apps_Settings/0002-OpenPhone-add-settings-dashboard.patch
+  patches/packages_apps_Settings/0003-OpenPhone-add-Settings-hosted-audit-and-grant-pages.patch
   patches/system_sepolicy/0001-OpenPhone-label-agent-manager-service.patch
 )
 

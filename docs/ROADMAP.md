@@ -1,56 +1,59 @@
 # Roadmap
 
-The detailed first-device execution plan lives in
-[V1_AI_PHONE_PLAN.md](V1_AI_PHONE_PLAN.md).
+The canonical active engineering plan lives in [PLAN.md](PLAN.md). This file is
+the short public roadmap.
 
-## Phase 0: Project Foundation
+## 0.0.1 Developer Preview
 
 Status: in progress.
 
-- Canonical repo.
-- SPEC.
-- Documentation.
-- License boundary.
-- Script skeleton.
-- Overlay skeleton.
+- Public repository cleanup.
+- License, notice, contribution, and security docs.
+- Changelog and release process.
+- GitHub CI for repository checks.
+- Pixel 9a development target documentation.
+- Current privileged assistant and framework-service source.
 
-## Phase 1: Reproducible Base Build
+## Agent v1
 
-- Sync LineageOS upstream.
-- Build generic OpenPhone product.
-- Select first physical device.
-- Build and flash the base OS.
+Status: in progress.
 
-## Phase 2: OpenPhone Product Layer
+- CUA-informed observe/reason/act loop implemented on the phone, not through
+  ADB.
+- Structured model tool schema.
+- Screenshot-based one-step action selection.
+- Multi-step task loop with max step/time limits.
+- Trajectory logging for screenshots, model calls, actions, policy decisions,
+  and failures.
+- Repeatable eval tasks.
 
-- Product branding.
-- Build properties.
-- Settings entry.
-- Privileged assistant package.
-- Initial permission allowlists.
-
-## Phase 3: Minimal Agent Privilege Path
+## OS Integration v1
 
 Status: partially implemented.
 
-- Basic screen context service: focused and visible activity metadata.
-- Basic action execution path: open app, navigation keys, pointer gestures,
-  scroll, text input, clipboard text actions, and confirmed share chooser.
-- Policy checks: seed capability policy, task-scoped input grants, and
-  one-shot pending action confirmation.
-- Audit log: durable framework log plus basic assistant audit browser.
+- Privileged assistant app.
+- Hidden framework manager API.
+- `system_server` OpenPhone agent service.
+- Screen context and screenshot payloads.
+- OS-mediated action execution.
+- Policy, confirmation, pointer event, and audit plumbing.
+- Assistant-owned cursor/status surface.
 
-## Phase 4: Framework Integration
+Remaining:
 
-- Binder APIs.
-- System service registration.
-- SystemUI and Settings integration.
-- SELinux policy.
+- UI hierarchy/OCR extraction.
+- SystemUI-owned active agent surface.
+- Settings-owned grant and audit surfaces.
+- Richer confirmation UX.
 
-## Phase 5: Device and Release Hardening
+## Device and Release Hardening
 
-- OTA.
-- Signing.
-- License/notice bundle.
-- Kernel source publication flow.
-- Automated device smoke tests.
+Status: early.
+
+- Harden the automated Pixel 9a DTB preparation and generated boot-chain
+  verification.
+- Build reproducible Pixel 9a release artifacts on Linux.
+- Add release checksums and notes.
+- Add self-hosted Android build CI later.
+- Validate Wi-Fi, cellular, camera, microphone, GPS, fingerprint, encryption,
+  and reboot stability.

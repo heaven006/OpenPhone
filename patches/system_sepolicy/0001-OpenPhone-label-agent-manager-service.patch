@@ -5,10 +5,29 @@ Subject: [PATCH] OpenPhone: label agent manager service
 
 Change-Id: Idaf458cef5d45ff69202e2c4bc66abe2921ed7b6
 ---
- private/service_contexts | 1 +
- public/service.te        | 1 +
- 2 files changed, 2 insertions(+)
+ build/soong/service_fuzzer_bindings.go | 1 +
+ private/service.te                     | 1 +
+ private/service_contexts               | 1 +
+ 3 files changed, 3 insertions(+)
 
+diff --git a/build/soong/service_fuzzer_bindings.go b/build/soong/service_fuzzer_bindings.go
+index 6061a2f92..d401f3f12 100644
+--- a/build/soong/service_fuzzer_bindings.go
++++ b/build/soong/service_fuzzer_bindings.go
+@@ -397,0 +398,1 @@ var (
++		"openphone_agent":                        EXCEPTION_NO_FUZZER,
+diff --git a/private/service.te b/private/service.te
+index f5e71abaf..cde126842 100644
+--- a/private/service.te
++++ b/private/service.te
+@@ -23,6 +23,7 @@ type logcat_service,                 system_server_service, service_manager_type
+ type logd_service,                   service_manager_type;
+ type mediatuner_service,             app_api_service, service_manager_type;
+ type mmd_service,                    service_manager_type;
++type openphone_agent_service,        system_api_service, system_server_service, service_manager_type;
+ type on_device_intelligence_service, app_api_service, system_server_service, service_manager_type, isolated_compute_allowed_service;
+ type omapi_service,                  service_manager_type;
+ type pcc_sandbox_service,            app_api_service, system_server_service, service_manager_type;
 diff --git a/private/service_contexts b/private/service_contexts
 index 84304c065..1db5092d4 100644
 --- a/private/service_contexts
@@ -21,18 +40,5 @@ index 84304c065..1db5092d4 100644
  ot_daemon                                 u:object_r:ot_daemon_service:s0
  overlay                                   u:object_r:overlay_service:s0
  pac_proxy                                 u:object_r:pac_proxy_service:s0
-diff --git a/public/service.te b/public/service.te
-index eefcd1b4f..505f9b254 100644
---- a/public/service.te
-+++ b/public/service.te
-@@ -196,6 +196,7 @@ type network_stack_service, system_server_service, service_manager_type;
- type network_time_update_service, system_server_service, service_manager_type;
- type notification_service, app_api_service, ephemeral_app_api_service, system_server_service, service_manager_type;
- type oem_lock_service, system_api_service, system_server_service, service_manager_type;
-+type openphone_agent_service, system_api_service, system_server_service, service_manager_type;
- until_board_api(202604, `
-     type otadexopt_service, system_server_service, service_manager_type;
- ');
 -- 
 2.43.0
-

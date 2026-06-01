@@ -158,6 +158,82 @@ Full product bringup:
   - Launching the assistant with `monkey -p org.openphone.assistant 1`
     displayed `org.openphone.assistant/.MainActivity`.
 
+## 2026-06-01: Assistant package metadata validation
+
+Artifacts:
+
+- UI-tree development OTA:
+  `.worktree/artifacts/tegu/openphone_tegu-agent-ui-tree-v37-ota.zip`
+- UI-tree development OTA SHA-256:
+  `db4867c90acde0294ce81ce8e890df39219184a1ab80ee9825171d95c880dbd2`
+- Cancellation/local-JSON OTA:
+  `.worktree/artifacts/tegu/openphone_tegu-agent-cancel-v38-ota.zip`
+- Cancellation/local-JSON OTA SHA-256:
+  `b4643a7d68620818b9dd59ada577d2f4392f4c2a21f74a5668b6608fdc2a2f02`
+- Package-cache-buster OTA:
+  `.worktree/artifacts/tegu/openphone_tegu-agent-cachebuster-v39-ota.zip`
+- Package-cache-buster OTA SHA-256:
+  `8ea2451c2b1a6ce0a98884f7aac1e57fb180088f564131e1e20bc855f50ad346`
+- Trajectory-export OTA:
+  `.worktree/artifacts/tegu/openphone_tegu-agent-export-v40-ota.zip`
+- Trajectory-export OTA SHA-256:
+  `50b175d95ce57139824c7c7bc896e8391c8543ea979891f12ae6c99eb9efa50e`
+
+Successful state:
+
+- v37 OTA sideloaded and booted.
+- After a data wipe and onboarding, PackageManager reported:
+  - `versionCode=37`
+  - `versionName=0.1.1-dev`
+  - `.OpenPhoneAccessibilityService`
+- `scripts/verify-tegu-device.sh` passed with:
+  - `service check openphone_agent -> found`
+  - accessibility service enabled for
+    `org.openphone.assistant/org.openphone.assistant.OpenPhoneAccessibilityService`
+
+Stale metadata finding:
+
+- v38 OTA sideloaded and booted.
+- The build host APK reported `versionCode=38` / `versionName=0.1.2-dev`.
+- The live phone APK bytes under
+  `/system_ext/priv-app/OpenPhoneAssistant/OpenPhoneAssistant.apk` matched the
+  build host output.
+- PackageManager still reported `versionCode=37` / `versionName=0.1.1-dev`.
+- v39 added a packaged `res/raw/package_parse_marker.txt` and changed the APK
+  size to force a more obvious package byte change.
+- v39 OTA sideloaded and booted.
+- The live phone APK SHA-256 matched the build host v39 APK:
+  `57b4781ff3265425c06651942fbc9cdd11b26b13cddf393a8c75f08f8a9899b0`
+- PackageManager still reported `versionCode=37` / `versionName=0.1.1-dev`.
+
+Conclusion:
+
+- The OTA path can update the system partition correctly.
+- The remaining issue is persisted PackageManager metadata, not stale
+  `/system_ext` APK bytes.
+- `scripts/verify-tegu-device.sh` now fails if PackageManager reports an
+  assistant version different from the repository manifest.
+- If this appears after a development OTA, wipe data from recovery and verify
+  again before running agent evals.
+
+Current physical state after a command-driven recovery wipe:
+
+- `adb devices -l` reports the Pixel 9a as `device`.
+- `adb get-state` reports `device`.
+- `adb shell`, `adb exec-out`, and `adb logcat` are not usable.
+- This matches the fresh-onboarding/USB-authorization state documented in
+  `devices/tegu.md`; finish onboarding, re-enable USB debugging, and accept the
+  prompt before continuing verification.
+
+Ready-to-flash next artifact:
+
+- v40 trajectory-export OTA was built after the device entered this state.
+- The APK in that OTA reports `versionCode=40` / `versionName=0.1.4-dev`.
+- The APK SHA-256 on the build host is
+  `f9dc7cd063d8321457ab1a55e9fc6d9205189c5c3284d36ed2f0003b30ab1c7f`.
+- Sideload this artifact only after the phone is back in recovery sideload mode
+  or normal ADB reboot commands are usable.
+
 ## 2026-05-31: Assistant v1 OTA
 
 - Built and sideloaded:

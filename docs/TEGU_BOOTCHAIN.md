@@ -63,19 +63,18 @@ files. It did contain a prebuilt `vendor_kernel_boot.img` with the DTB embedded.
 Result: target-files generated `VENDOR_KERNEL_BOOT/dtb` as a zero-byte file,
 then built a `vendor_kernel_boot.img` with DTB size `0`.
 
-## Temporary Build Fix
+## Build Fix
 
-Extract the DTB from the prebuilt image before building target-files:
+`scripts/build.sh` now handles this automatically for `openphone_tegu` and
+`openphone_tegu_smoke` when the build goal produces target-files or an OTA. It
+builds `unpack_bootimg` if needed, extracts the DTB from the prebuilt image,
+and verifies the generated `vendor_kernel_boot.img` after the Android build.
+
+The manual equivalent is:
 
 ```bash
-cd "$OPENPHONE_ANDROID_DIR"
-rm -rf /tmp/vkb-prebuilt
-mkdir -p /tmp/vkb-prebuilt
-out/host/linux-x86/bin/unpack_bootimg \
-  --boot_img device/google/tegu-kernels/6.1/vendor_kernel_boot.img \
-  --out /tmp/vkb-prebuilt
-cp /tmp/vkb-prebuilt/dtb device/google/tegu-kernels/6.1/tegu.dtb
-sha256sum device/google/tegu-kernels/6.1/tegu.dtb
+cd /path/to/OpenPhone
+OPENPHONE_ANDROID_DIR=/path/to/android/tree ./scripts/prepare-tegu-dtb.sh
 ```
 
 Expected DTB SHA-256:
@@ -84,21 +83,15 @@ Expected DTB SHA-256:
 f1aed2bc4c07d3cb1e610f5227a566f22e995dfe05341ca6bf14805be6928688
 ```
 
-Then rebuild target-files and the OTA.
+Then build target-files and the OTA.
 
 ## Validation
 
-After rebuilding, inspect the generated image:
+After rebuilding, inspect the generated image manually with:
 
 ```bash
-cd "$OPENPHONE_ANDROID_DIR"
-rm -rf /tmp/vkb-check
-mkdir -p /tmp/vkb-check
-out/host/linux-x86/bin/unpack_bootimg \
-  --boot_img out/target/product/tegu/obj/PACKAGING/target_files_intermediates/openphone_tegu_smoke-target_files/IMAGES/vendor_kernel_boot.img \
-  --out /tmp/vkb-check
-ls -lh /tmp/vkb-check/dtb
-sha256sum /tmp/vkb-check/dtb
+cd /path/to/OpenPhone
+OPENPHONE_ANDROID_DIR=/path/to/android/tree ./scripts/verify-tegu-bootchain.sh openphone_tegu
 ```
 
 Expected result:
@@ -113,4 +106,3 @@ The product variable `PRODUCT_BUILD_VENDOR_KERNEL_BOOT_IMAGE := false` was
 tried in the OpenPhone product overlay but did not prevent target-files from
 rebuilding `vendor_kernel_boot.img`. Treat that variable as insufficient for
 this branch until proven otherwise.
-

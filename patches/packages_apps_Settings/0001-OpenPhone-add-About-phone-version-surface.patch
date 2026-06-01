@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenPhone <openphone@example.invalid>
+Date: Mon, 1 Jun 2026 16:45:00 +0300
+Subject: [PATCH] OpenPhone: add About phone version surface
+
+Expose OpenPhone identity in Settings/About so the device can be verified from
+normal UI, not only through adb properties.
+---
+ res/values/strings.xml                                      |  6 ++++++
+ res/xml/my_device_info.xml                                  | 22 ++++++++++++++++++++++
+ .../OpenPhoneVersionPreferenceController.java               | 50 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 78 insertions(+)
+ create mode 100644 src/com/android/settings/deviceinfo/firmwareversion/OpenPhoneVersionPreferenceController.java
+
+diff --git a/res/values/strings.xml b/res/values/strings.xml
+--- a/res/values/strings.xml
++++ b/res/values/strings.xml
+@@ -3611,6 +3611,12 @@
+
+     <!-- About phone screen, status item label  [CHAR LIMIT=40] -->
+     <string name="firmware_version">Android version</string>
++    <!-- About phone screen, OpenPhone version preference title. -->
++    <string name="openphone_version" translatable="false">OpenPhone version</string>
++    <!-- About phone screen, OpenPhone support preference title. -->
++    <string name="openphone_support" translatable="false">OpenPhone support</string>
++    <!-- About phone screen, OpenPhone support preference summary. -->
++    <string name="openphone_support_summary" translatable="false">Build, flash, and issue reporting docs</string>
+     <!-- About phone screen, status item label  [CHAR LIMIT=60] -->
+     <string name="security_patch">Android security update</string>
+     <!-- About phone screen, status item label  [CHAR LIMIT=40] -->
+diff --git a/res/xml/my_device_info.xml b/res/xml/my_device_info.xml
+--- a/res/xml/my_device_info.xml
++++ b/res/xml/my_device_info.xml
+@@ -136,6 +136,28 @@
+             settings:enableCopying="true"
+             settings:isPreferenceVisible="@bool/config_show_sim_info"
+             settings:controller="com.android.settings.deviceinfo.imei.ImeiInfoPreferenceController"/>
++
++        <!-- OpenPhone version -->
++        <Preference
++            android:key="openphone_version"
++            android:order="40"
++            android:title="@string/openphone_version"
++            android:summary="@string/summary_placeholder"
++            android:selectable="false"
++            settings:enableCopying="true"
++            settings:controller="com.android.settings.deviceinfo.firmwareversion.OpenPhoneVersionPreferenceController"/>
++
++        <!-- OpenPhone support -->
++        <Preference
++            android:key="openphone_support"
++            android:order="41"
++            android:title="@string/openphone_support"
++            android:summary="@string/openphone_support_summary"
++            settings:enableCopying="true">
++            <intent
++                android:action="android.intent.action.VIEW"
++                android:data="https://github.com/secondly-com/OpenPhone"/>
++        </Preference>
+ 
+         <!-- Android version -->
+         <Preference
+diff --git a/src/com/android/settings/deviceinfo/firmwareversion/OpenPhoneVersionPreferenceController.java b/src/com/android/settings/deviceinfo/firmwareversion/OpenPhoneVersionPreferenceController.java
+new file mode 100644
+--- /dev/null
++++ b/src/com/android/settings/deviceinfo/firmwareversion/OpenPhoneVersionPreferenceController.java
+@@ -0,0 +1,50 @@
++/*
++ * Copyright (C) 2026 The OpenPhone Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.settings.deviceinfo.firmwareversion;
++
++import android.content.Context;
++import android.os.SystemProperties;
++import android.text.TextUtils;
++
++import com.android.settings.R;
++import com.android.settings.core.BasePreferenceController;
++
++public class OpenPhoneVersionPreferenceController extends BasePreferenceController {
++
++    private static final String KEY_OPENPHONE_VERSION_PROP = "ro.openphone.version";
++
++    public OpenPhoneVersionPreferenceController(Context context, String key) {
++        super(context, key);
++    }
++
++    @Override
++    public int getAvailabilityStatus() {
++        String version = SystemProperties.get(KEY_OPENPHONE_VERSION_PROP);
++        return TextUtils.isEmpty(version) ? UNSUPPORTED_ON_DEVICE : AVAILABLE;
++    }
++
++    @Override
++    public boolean useDynamicSliceSummary() {
++        return true;
++    }
++
++    @Override
++    public CharSequence getSummary() {
++        return SystemProperties.get(KEY_OPENPHONE_VERSION_PROP,
++                mContext.getString(R.string.unknown));
++    }
++}
+-- 
+2.39.5

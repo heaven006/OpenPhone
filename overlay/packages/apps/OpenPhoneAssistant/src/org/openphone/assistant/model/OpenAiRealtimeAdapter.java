@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -17,8 +18,12 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
     private static final String MODEL = "gpt-4.1-mini";
     private static final String RESPONSES_URL = "https://api.openai.com/v1/responses";
     private static final int MAX_STEPS = 10;
+    private static final int MAX_CONSECUTIVE_TOOL_ERRORS = 2;
+    private static final long MAX_DURATION_MS = 120000;
 
     private final String mApiKey;
+    private volatile boolean mCancelled;
+    private volatile HttpURLConnection mActiveConnection;
 
     public OpenAiRealtimeAdapter(String apiKey) {
         mApiKey = apiKey == null ? "" : apiKey.trim();
@@ -30,17 +35,58 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
     }
 
     @Override
+    public String providerDisplayName() {
+        return "OpenAI Responses vision";
+    }
+
+    @Override
+    public String modelName() {
+        return MODEL;
+    }
+
+    @Override
+    public boolean usesCloud() {
+        return true;
+    }
+
+    @Override
+    public String privacyDisclosure() {
+        return "Cloud task mode sends the goal, task-scoped screenshots, and UI metadata "
+                + "to OpenAI while the task is active. The development API key stays in "
+                + "memory and is not written to the trajectory.";
+    }
+
+    @Override
+    public void cancel() {
+        mCancelled = true;
+        HttpURLConnection connection = mActiveConnection;
+        if (connection != null) {
+            connection.disconnect();
+        }
+    }
+
+    @Override
     public String runTask(String taskId, String userGoal, ToolExecutor executor) {
+        mCancelled = false;
         if (mApiKey == null || mApiKey.isEmpty()) {
             return unavailable("missing_dev_api_key");
         }
 
         JSONArray steps = new JSONArray();
         try {
+            long startedAtMillis = System.currentTimeMillis();
+            int consecutiveToolErrors = 0;
             for (int step = 1; step <= MAX_STEPS; step++) {
-                String screen = executor.callTool("get_screen",
-                        "{\"include_screenshot\":true,\"include_activity\":true,"
-                                + "\"max_dimension\":512,\"quality\":65}");
+                if (mCancelled || executor.isCancelled()) {
+                    return result("cancelled", userGoal, steps);
+                }
+                if (System.currentTimeMillis() - startedAtMillis > MAX_DURATION_MS) {
+                    return result("duration_limit_reached", userGoal, steps);
+                }
+                String screen = captureScreenWithRetry(executor);
+                if (mCancelled || executor.isCancelled()) {
+                    return result("cancelled", userGoal, steps);
+                }
                 JSONObject screenJson = new JSONObject(screen);
                 JSONObject screenshot = screenJson.optJSONObject("screenshot");
                 if (screenshot == null || screenshot.optString("data").isEmpty()) {
@@ -54,6 +100,9 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 }
 
                 JSONObject response = callResponsesApi(userGoal, steps, screenJson, screenshot);
+                if (mCancelled || executor.isCancelled()) {
+                    return result("cancelled", userGoal, steps);
+                }
                 String outputText = extractOutputText(response);
                 JSONObject decision = parseDecision(outputText);
                 JSONObject stepJson = new JSONObject()
@@ -86,17 +135,66 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                     stepJson.put("tool_result", errorJson("unknown_model_tool:" + toolName));
                     return result("agent.blocked", userGoal, steps);
                 }
+                JSONObject guardrail = guardrailConfirmation(userGoal, screenJson, toolName,
+                        arguments);
+                if (guardrail != null) {
+                    stepJson.put("guardrail", guardrail);
+                    String toolResult = executor.callTool("ask_user_confirmation",
+                            guardrail.toString());
+                    stepJson.put("tool_result", toolResult);
+                    return result("confirmation_required", userGoal, steps);
+                }
 
                 String toolResult = executor.callTool(toolName, arguments.toString());
                 stepJson.put("tool_result", toolResult);
+                if (mCancelled || executor.isCancelled()) {
+                    return result("cancelled", userGoal, steps);
+                }
+                String toolStatus = toolStatus(toolResult);
+                if ("confirmation_requested".equals(toolStatus)
+                        || "confirmation_required".equals(toolStatus)) {
+                    return result("confirmation_required", userGoal, steps);
+                }
+                if ("denied".equals(toolStatus)) {
+                    return result("action_denied", userGoal, steps);
+                }
+                if (isToolFailure(toolStatus)) {
+                    consecutiveToolErrors++;
+                    stepJson.put("consecutive_tool_errors", consecutiveToolErrors);
+                    if (consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS) {
+                        return result("action_failed", userGoal, steps);
+                    }
+                } else {
+                    consecutiveToolErrors = 0;
+                }
                 sleepAfterAction();
             }
             return result("step_limit_reached", userGoal, steps);
         } catch (JSONException e) {
             return error("json_error", e.getMessage(), steps);
         } catch (IOException e) {
+            if (mCancelled || executor.isCancelled()) {
+                return cancelledResult(userGoal, steps);
+            }
             return error("network_error", e.getMessage(), steps);
         }
+    }
+
+    private String captureScreenWithRetry(ToolExecutor executor) {
+        String request = "{\"include_screenshot\":true,\"include_activity\":true,"
+                + "\"include_ui_tree\":true,"
+                + "\"max_dimension\":512,\"quality\":65}";
+        String screen = executor.callTool("get_screen", request);
+        if (hasScreenshot(screen) || mCancelled || executor.isCancelled()) {
+            return screen;
+        }
+        try {
+            Thread.sleep(750);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return screen;
+        }
+        return executor.callTool("get_screen", request);
     }
 
     private JSONObject callResponsesApi(String userGoal, JSONArray steps, JSONObject screenJson,
@@ -110,10 +208,16 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 + "If the task is complete, use finish_task. If you are stuck, use fail_task. "
                 + "Do not include markdown.\n\n"
                 + "Allowed JSON schema:\n"
-                + "{\"thought\":\"short reason\",\"tool\":\"open_app|open_url|tap|long_press|swipe|"
-                + "type_text|press_key|set_clipboard|paste|share_text|finish_task|fail_task\","
+                + "{\"thought\":\"short reason\",\"tool\":\"get_screen|watch_screen|"
+                + "open_app|open_url|tap|long_press|swipe|type_text|press_key|"
+                + "set_clipboard|paste|share_text|wait|"
+                + "ask_user_confirmation|finish_task|fail_task\","
                 + "\"arguments\":{...}}\n\n"
                 + "Tool arguments:\n"
+                + "- get_screen: {\"include_screenshot\":true,\"include_activity\":true,"
+                + "\"include_ui_tree\":true,\"reason\":\"...\"}\n"
+                + "- watch_screen: {\"fps\":1,\"duration_ms\":1500,\"include_ui_tree\":true,"
+                + "\"reason\":\"...\"}\n"
                 + "- open_app: {\"package_or_label\":\"Settings|Browser|org.lineageos.jelly\"}\n"
                 + "- open_url: {\"url\":\"https://example.com\"}\n"
                 + "- tap/long_press: {\"x\":540,\"y\":1200,\"reason\":\"...\"}\n"
@@ -122,6 +226,9 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 + "- type_text/set_clipboard/share_text: {\"text\":\"...\",\"reason\":\"...\"}\n"
                 + "- paste: {\"reason\":\"...\"}\n"
                 + "- press_key: {\"key\":\"back|home|recents\",\"reason\":\"...\"}\n"
+                + "- wait: {\"duration_ms\":1000,\"reason\":\"...\"}\n"
+                + "- ask_user_confirmation: {\"summary\":\"...\",\"risk\":\"...\","
+                + "\"action_json\":{...}}\n"
                 + "- finish_task: {\"summary\":\"...\"}\n"
                 + "- fail_task: {\"reason\":\"...\"}\n\n"
                 + "For app downloads, prefer an already-installed app store if visible. "
@@ -154,27 +261,36 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 .put("max_output_tokens", 500);
 
         HttpURLConnection connection = (HttpURLConnection) new URL(RESPONSES_URL).openConnection();
-        connection.setConnectTimeout(15000);
-        connection.setReadTimeout(45000);
-        connection.setRequestMethod("POST");
-        connection.setDoOutput(true);
-        connection.setRequestProperty("Authorization", "Bearer " + mApiKey);
-        connection.setRequestProperty("Content-Type", "application/json");
-        connection.setRequestProperty("Accept", "application/json");
+        mActiveConnection = connection;
+        try {
+            connection.setConnectTimeout(15000);
+            connection.setReadTimeout(45000);
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Authorization", "Bearer " + mApiKey);
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("Accept", "application/json");
 
-        byte[] bodyBytes = body.toString().getBytes(StandardCharsets.UTF_8);
-        connection.setFixedLengthStreamingMode(bodyBytes.length);
-        try (OutputStream outputStream = connection.getOutputStream()) {
-            outputStream.write(bodyBytes);
-        }
+            byte[] bodyBytes = body.toString().getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(bodyBytes.length);
+            try (OutputStream outputStream = connection.getOutputStream()) {
+                outputStream.write(bodyBytes);
+            }
 
-        int statusCode = connection.getResponseCode();
-        String responseBody = readAll(statusCode >= 200 && statusCode < 300
-                ? connection.getInputStream() : connection.getErrorStream());
-        if (statusCode < 200 || statusCode >= 300) {
-            throw new IOException("OpenAI HTTP " + statusCode + ": " + summarizeError(responseBody));
+            int statusCode = connection.getResponseCode();
+            String responseBody = readAll(statusCode >= 200 && statusCode < 300
+                    ? connection.getInputStream() : connection.getErrorStream());
+            if (statusCode < 200 || statusCode >= 300) {
+                throw new IOException("OpenAI HTTP " + statusCode + ": "
+                        + summarizeError(responseBody));
+            }
+            return new JSONObject(responseBody);
+        } finally {
+            if (mActiveConnection == connection) {
+                mActiveConnection = null;
+            }
+            connection.disconnect();
         }
-        return new JSONObject(responseBody);
     }
 
     private static JSONObject parseDecision(String outputText) throws JSONException {
@@ -195,7 +311,9 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
     }
 
     private static boolean isAllowedTool(String toolName) {
-        return "open_app".equals(toolName)
+        return "get_screen".equals(toolName)
+                || "watch_screen".equals(toolName)
+                || "open_app".equals(toolName)
                 || "open_url".equals(toolName)
                 || "tap".equals(toolName)
                 || "long_press".equals(toolName)
@@ -204,7 +322,133 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 || "press_key".equals(toolName)
                 || "set_clipboard".equals(toolName)
                 || "paste".equals(toolName)
+                || "share_text".equals(toolName)
+                || "wait".equals(toolName)
+                || "ask_user_confirmation".equals(toolName);
+    }
+
+    private static JSONObject guardrailConfirmation(String userGoal, JSONObject screenJson,
+            String toolName, JSONObject arguments) throws JSONException {
+        if (!canChangeDeviceOrExternalState(toolName)) {
+            return null;
+        }
+
+        String screenText = normalizedScreenText(screenJson);
+        String goal = userGoal == null ? "" : userGoal.toLowerCase(Locale.US);
+        String risk = "";
+        String summary = "";
+        if (containsAny(screenText, "install", "update", "download", "get app",
+                "unknown apps", "allow from this source", "permission", "allow access")) {
+            risk = "High";
+            summary = "The agent is about to act on an install, update, download, "
+                    + "or permission screen.";
+        } else if (containsAny(screenText, "buy", "purchase", "payment", "subscribe",
+                "checkout", "card", "₪", "$", "order")) {
+            risk = "High";
+            summary = "The agent is about to act on a purchase, payment, or "
+                    + "subscription screen.";
+        } else if (containsAny(screenText, "delete", "remove", "erase", "reset",
+                "factory reset")) {
+            risk = "High";
+            summary = "The agent is about to act on a destructive data-change screen.";
+        } else if (containsAny(screenText, "send", "post", "share", "call", "message",
+                "sms", "whatsapp", "email")) {
+            risk = "High";
+            summary = "The agent is about to communicate, share, call, message, "
+                    + "or post content.";
+        } else if (containsAny(screenText, "password", "sign in", "login", "log in",
+                "account", "verification code", "2-step", "two-step")) {
+            risk = "High";
+            summary = "The agent is about to act on an account, login, password, "
+                    + "or verification screen.";
+        } else if (("share_text".equals(toolName) || "set_clipboard".equals(toolName)
+                || "paste".equals(toolName))
+                && containsAny(goal, "send", "share", "post", "message", "email")) {
+            risk = "High";
+            summary = "The agent is about to prepare or share user-provided content.";
+        }
+
+        if (risk.isEmpty()) {
+            return null;
+        }
+
+        return new JSONObject()
+                .put("summary", summary)
+                .put("risk", risk)
+                .put("capability", capabilityForTool(toolName))
+                .put("action_json", new JSONObject()
+                        .put("tool", toolName)
+                        .put("arguments", arguments == null ? new JSONObject() : arguments));
+    }
+
+    private static boolean canChangeDeviceOrExternalState(String toolName) {
+        return "tap".equals(toolName)
+                || "long_press".equals(toolName)
+                || "swipe".equals(toolName)
+                || "type_text".equals(toolName)
+                || "press_key".equals(toolName)
+                || "set_clipboard".equals(toolName)
+                || "paste".equals(toolName)
                 || "share_text".equals(toolName);
+    }
+
+    private static String capabilityForTool(String toolName) {
+        if ("share_text".equals(toolName)) {
+            return "content.share";
+        }
+        if ("set_clipboard".equals(toolName) || "paste".equals(toolName)) {
+            return "clipboard.write";
+        }
+        if ("type_text".equals(toolName)) {
+            return "input.text";
+        }
+        return "input.perform";
+    }
+
+    private static String normalizedScreenText(JSONObject screenJson) throws JSONException {
+        JSONObject copy = redactScreenshot(new JSONObject(screenJson.toString()));
+        return copy.toString().toLowerCase(Locale.US);
+    }
+
+    private static boolean containsAny(String text, String... needles) {
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        for (String needle : needles) {
+            if (needle != null && !needle.isEmpty() && text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String toolStatus(String toolResult) {
+        if (toolResult == null || toolResult.trim().isEmpty()) {
+            return "";
+        }
+        try {
+            return new JSONObject(toolResult).optString("status", "");
+        } catch (JSONException e) {
+            return "";
+        }
+    }
+
+    private static boolean isToolFailure(String toolStatus) {
+        return "error".equals(toolStatus)
+                || "task.failed".equals(toolStatus)
+                || "screen_capture_failed".equals(toolStatus);
+    }
+
+    private static boolean hasScreenshot(String screen) {
+        if (screen == null || screen.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            JSONObject screenshot = new JSONObject(screen).optJSONObject("screenshot");
+            return screenshot != null && !screenshot.optString("data").isEmpty();
+        } catch (JSONException e) {
+            return false;
+        }
     }
 
     private static void sleepAfterAction() {
@@ -312,6 +556,14 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 .put("goal", userGoal == null ? "" : userGoal)
                 .put("steps", steps)
                 .toString(2);
+    }
+
+    private static String cancelledResult(String userGoal, JSONArray steps) {
+        try {
+            return result("cancelled", userGoal, steps);
+        } catch (JSONException e) {
+            return "{\"status\":\"cancelled\",\"reason\":\"user_stopped\"}";
+        }
     }
 
     private static String error(String status, String reason, JSONArray steps) {

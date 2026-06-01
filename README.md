@@ -25,9 +25,10 @@ This repo currently implements the OpenPhone OS bringup described in
   flow, and persistent audit log patches.
 - Verified full-product boot on a physical Pixel 9a.
 
-The next deep OS integration work is the actual model/task loop, richer screen
-understanding, Settings/SystemUI surfaces, broader action coverage, OTA
-hardening, production signing, and validated device ports beyond Pixel 9a.
+The active plan is tracked in [docs/PLAN.md](docs/PLAN.md). The next deep OS
+integration work is the actual model/task loop, richer screen understanding,
+Settings/SystemUI surfaces, broader action coverage, OTA hardening, production
+signing, and validated device ports beyond Pixel 9a.
 
 ## Repository Layout
 
@@ -39,6 +40,7 @@ overlay/    Files copied into the Android source tree.
 patches/    Patch stacks applied on top of upstream LineageOS repos.
 scripts/    Sync, patch, build, flash, and validation helpers.
 SPEC.md     Product and architecture specification.
+CHANGELOG.md Public release history.
 ```
 
 ## Quick Start

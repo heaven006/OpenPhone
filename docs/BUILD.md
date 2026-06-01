@@ -151,10 +151,19 @@ The Pixel 9a product is `openphone_tegu-bp4a-userdebug`. Native macOS builds
 will only build host-side targets because `build/make/core/main.mk` restricts
 Darwin to host modules.
 
-For the current Pixel 9a prebuilts, run the DTB preparation step documented in
-[TEGU_BOOTCHAIN.md](TEGU_BOOTCHAIN.md) before producing target-files. Without
-that step, target-files can generate a `vendor_kernel_boot.img` with a zero-byte
-DTB, which falls back to fastboot before Android starts.
+For `openphone_tegu` and `openphone_tegu_smoke`, `scripts/build.sh`
+automatically prepares the Pixel 9a DTB before target-files/OTA-producing build
+goals and verifies the generated `vendor_kernel_boot.img` afterward. The helper
+extracts `tegu.dtb` from the upstream prebuilt
+`device/google/tegu-kernels/6.1/vendor_kernel_boot.img` and checks it against
+the known-good hash documented in [TEGU_BOOTCHAIN.md](TEGU_BOOTCHAIN.md).
+
+To run those steps manually:
+
+```bash
+OPENPHONE_ANDROID_DIR=/path/to/android/tree ./scripts/prepare-tegu-dtb.sh
+OPENPHONE_ANDROID_DIR=/path/to/android/tree ./scripts/verify-tegu-bootchain.sh openphone_tegu
+```
 
 ## Flash
 

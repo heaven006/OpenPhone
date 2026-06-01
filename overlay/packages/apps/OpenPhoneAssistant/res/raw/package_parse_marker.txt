@@ -1,0 +1,9 @@
+OpenPhone Assistant package parse marker.
+
+This packaged resource intentionally changes when development OTAs need to
+force Android PackageManager to reparse the system APK even when deterministic
+build timestamps and similar APK sizes could otherwise reuse stale package
+metadata.
+
+versionCode=48
+versionName=0.1.12-dev

@@ -77,6 +77,19 @@ OPENPHONE_BUILD_GOAL=bacon \
 ./scripts/build.sh openphone_tegu
 ```
 
+For Pixel 9a OTA-producing build goals, `scripts/build.sh` automatically
+prepares `device/google/tegu-kernels/6.1/tegu.dtb` from the upstream prebuilt
+`vendor_kernel_boot.img` and verifies the generated `vendor_kernel_boot.img`
+contains the known-good DTB. The same checks can be run manually with:
+
+```bash
+OPENPHONE_ANDROID_DIR="$PWD/.worktree/OpenPhoneAndroid/android" \
+./scripts/prepare-tegu-dtb.sh
+
+OPENPHONE_ANDROID_DIR="$PWD/.worktree/OpenPhoneAndroid/android" \
+./scripts/verify-tegu-bootchain.sh openphone_tegu
+```
+
 Expected output directory:
 
 ```text
@@ -157,7 +170,68 @@ service check openphone_agent -> found
 dumpsys activity services -> org.openphone.assistant/.OpenPhoneAssistantService running
 ```
 
+## Recovery and ADB Notes
+
+After a clean data wipe or recovery `Format data / factory reset`, Android may
+boot to first-run onboarding with stale host-side ADB visibility:
+
+```text
+adb devices -l -> device
+adb get-state -> device
+adb shell -> error: closed
+adb logcat -> waiting for device
+adb install -> abb_exec failed: closed
+```
+
+Treat this as an authorization/onboarding state, not proof that Android failed
+to boot. Complete or skip onboarding until the home screen, then re-enable
+Developer Options and USB debugging. Accept the USB debugging prompt on the
+phone before running package or service verification.
+
+Useful post-onboarding verification:
+
+```bash
+./scripts/verify-tegu-device.sh
+```
+
+The script runs the ADB shell probe, device identity checks, framework service
+check, assistant package diagnostics, accessibility settings, and recent
+OpenPhone logs. The underlying manual commands are:
+
+```bash
+adb shell 'getprop sys.boot_completed'
+adb shell 'service check openphone_agent'
+adb shell 'dumpsys package org.openphone.assistant | grep -E "versionCode|versionName|OpenPhoneAccessibilityService" -n'
+adb shell 'settings get secure enabled_accessibility_services'
+adb shell 'settings get secure accessibility_enabled'
+```
+
+For the current repository manifest, the assistant APK should report
+`versionCode=48`, `versionName=0.1.12-dev`, and
+`.OpenPhoneAccessibilityService`. The current local Pixel 9a artifact is:
+
+```text
+.worktree/artifacts/tegu/openphone_tegu-model-disclosure-sepolicy-v51-ota.zip
+SHA-256: b93db84907523b8e37816abab0a315b1f62b82321755612e82d057fd8f80e866
+```
+
+Trust `scripts/verify-tegu-device.sh` over stale example output. The script
+derives the expected assistant package version from the repository manifest and
+fails if PackageManager still reports stale metadata.
+
 ## Acceptance Checklist
+
+Run the automated portion of the hardware checklist with:
+
+```bash
+./scripts/smoke-test-tegu-hardware.sh
+```
+
+The script writes an evidence report under `.worktree/reports/`. Automated
+service probes are not enough to mark user-facing hardware as passing; fill in
+the manual sections for calls/SMS, microphone/speaker, camera capture,
+fingerprint enrollment, reboot stability, and factory reset before moving those
+rows out of `pending`.
 
 | Area | Status |
 | --- | --- |
@@ -191,7 +265,16 @@ dumpsys activity services -> org.openphone.assistant/.OpenPhoneAssistantService 
 
 - Play Integrity behavior is expected to change after bootloader unlock.
 - OTA/release signing is not implemented yet.
-- Current Pixel 9a OpenPhone builds require the DTB extraction fix before
-  target-files/OTA generation.
+- Pixel 9a OpenPhone target-files/OTA builds rely on the automated DTB
+  extraction and verification in `scripts/build.sh`.
 - Full product boot requires the OpenPhone `system/sepolicy` service label for
   `openphone_agent`.
+- After a data wipe, ADB may list the device before shell/logcat/install
+  channels work. Finish onboarding and re-authorize USB debugging before
+  treating `adb shell: error: closed` as a lower-level transport failure.
+- A development OTA can update
+  `/system_ext/priv-app/OpenPhoneAssistant/OpenPhoneAssistant.apk` while
+  PackageManager still reports an older assistant `versionCode` from persisted
+  package metadata. Verify both the APK hash and PackageManager version after
+  each OTA. If PackageManager stays stale after onboarding, wipe data from
+  recovery and verify again before running agent evals.

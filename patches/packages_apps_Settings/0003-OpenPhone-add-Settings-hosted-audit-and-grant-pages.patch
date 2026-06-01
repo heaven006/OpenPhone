@@ -1,0 +1,334 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenPhone <openphone@example.invalid>
+Date: Mon, 1 Jun 2026 19:10:00 +0300
+Subject: [PATCH] OpenPhone: add Settings-hosted audit and grant pages
+
+Add Settings-owned OpenPhone subpages for task-grant policy and framework audit status.
+The audit page reads the OpenPhone framework service directly when available and keeps
+the assistant export flow as a handoff for file generation.
+---
+diff --git a/AndroidManifest.xml b/AndroidManifest.xml
+index f4691b4c43e..8f193788f7f 100644
+--- a/AndroidManifest.xml
++++ b/AndroidManifest.xml
+@@ -16,6 +16,7 @@
+         android:name="com.android.settings.USE_BIOMETRIC_PROVIDER"
+         android:protectionLevel="signature|privileged"/>
+ 
++    <uses-permission android:name="org.openphone.permission.READ_AGENT_AUDIT_LOG" />
+     <uses-permission android:name="android.permission.REQUEST_NETWORK_SCORES" />
+     <uses-permission android:name="android.permission.WRITE_MEDIA_STORAGE" />
+     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+diff --git a/res/values/strings.xml b/res/values/strings.xml
+index 2e94475d5fa..6c4c3696cf3 100644
+--- a/res/values/strings.xml
++++ b/res/values/strings.xml
+@@ -3635,6 +3635,42 @@
+     <string name="openphone_audit_title" translatable="false">Audit evidence</string>
+     <!-- OpenPhone settings audit entry summary. -->
+     <string name="openphone_audit_summary" translatable="false">Open audit export and trajectory evidence for assistant actions</string>
++    <!-- OpenPhone task grant screen service status title. -->
++    <string name="openphone_service_status_title" translatable="false">Service status</string>
++    <!-- OpenPhone service unavailable summary. -->
++    <string name="openphone_service_unavailable" translatable="false">OpenPhone system service is not available</string>
++    <!-- OpenPhone task grant screen title. -->
++    <string name="openphone_task_grants_screen_title" translatable="false">Task grants</string>
++    <!-- OpenPhone task grant screen intro title. -->
++    <string name="openphone_task_grants_intro_title" translatable="false">How task grants work</string>
++    <!-- OpenPhone task grant screen intro summary. -->
++    <string name="openphone_task_grants_intro_summary" translatable="false">OpenPhone grants capabilities per active task. The assistant sends selected grants to the framework before model tools can run.</string>
++    <!-- OpenPhone input grant title. -->
++    <string name="openphone_grant_input_title" translatable="false">Input and navigation</string>
++    <!-- OpenPhone input grant summary. -->
++    <string name="openphone_grant_input_summary" translatable="false">Allows taps, swipes, typing, Back, Home, and Recents only while an active task is running.</string>
++    <!-- OpenPhone screenshot grant title. -->
++    <string name="openphone_grant_screenshot_title" translatable="false">Screenshot context</string>
++    <!-- OpenPhone screenshot grant summary. -->
++    <string name="openphone_grant_screenshot_summary" translatable="false">Allows task-scoped screenshot payloads. Idle and listening states do not capture the screen.</string>
++    <!-- OpenPhone clipboard grant title. -->
++    <string name="openphone_grant_clipboard_title" translatable="false">Clipboard</string>
++    <!-- OpenPhone clipboard grant summary. -->
++    <string name="openphone_grant_clipboard_summary" translatable="false">Allows clipboard write and paste tools after explicit task approval.</string>
++    <!-- OpenPhone sharing grant title. -->
++    <string name="openphone_grant_share_title" translatable="false">Sharing and links</string>
++    <!-- OpenPhone sharing grant summary. -->
++    <string name="openphone_grant_share_summary" translatable="false">Allows share-sheet and web-link tools; risky sends still require confirmation.</string>
++    <!-- OpenPhone audit screen title. -->
++    <string name="openphone_audit_screen_title" translatable="false">Audit evidence</string>
++    <!-- OpenPhone audit recent events title. -->
++    <string name="openphone_recent_audit_title" translatable="false">Recent framework audit</string>
++    <!-- OpenPhone audit empty summary. -->
++    <string name="openphone_audit_empty" translatable="false">No recent framework audit events</string>
++    <!-- OpenPhone audit export entry title. -->
++    <string name="openphone_audit_export_title" translatable="false">Export evidence</string>
++    <!-- OpenPhone audit export entry summary. -->
++    <string name="openphone_audit_export_summary" translatable="false">Open the assistant to export redacted audit and trajectory files to Downloads/OpenPhone</string>
+     <!-- About phone screen, status item label  [CHAR LIMIT=60] -->
+     <string name="security_patch">Android security update</string>
+     <!-- About phone screen, status item label  [CHAR LIMIT=40] -->
+diff --git a/res/xml/openphone_audit.xml b/res/xml/openphone_audit.xml
+new file mode 100644
+index 00000000000..230c37a19dc
+--- /dev/null
++++ b/res/xml/openphone_audit.xml
+@@ -0,0 +1,30 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Copyright (C) 2026 The OpenPhone Project -->
++<PreferenceScreen
++    xmlns:android="http://schemas.android.com/apk/res/android"
++    android:key="openphone_audit"
++    android:title="@string/openphone_audit_screen_title">
++
++    <Preference
++        android:key="openphone_audit_service_status"
++        android:title="@string/openphone_service_status_title"
++        android:summary="@string/summary_placeholder"
++        android:selectable="false"/>
++
++    <Preference
++        android:key="openphone_recent_audit"
++        android:title="@string/openphone_recent_audit_title"
++        android:summary="@string/openphone_audit_empty"
++        android:selectable="false"/>
++
++    <Preference
++        android:key="openphone_audit_export"
++        android:title="@string/openphone_audit_export_title"
++        android:summary="@string/openphone_audit_export_summary">
++        <intent
++            android:action="android.intent.action.MAIN"
++            android:targetPackage="org.openphone.assistant"
++            android:targetClass="org.openphone.assistant.MainActivity"/>
++    </Preference>
++
++</PreferenceScreen>
+diff --git a/res/xml/openphone_settings.xml b/res/xml/openphone_settings.xml
+index 07c6d43532c..209857a65f6 100644
+--- a/res/xml/openphone_settings.xml
++++ b/res/xml/openphone_settings.xml
+@@ -31,24 +31,16 @@
+     </Preference>
+ 
+     <Preference
++        android:fragment="com.android.settings.openphone.OpenPhoneTaskGrantSettings"
+         android:key="openphone_task_grants"
+         android:title="@string/openphone_task_grants_title"
+-        android:summary="@string/openphone_task_grants_summary">
+-        <intent
+-            android:action="android.intent.action.MAIN"
+-            android:targetPackage="org.openphone.assistant"
+-            android:targetClass="org.openphone.assistant.MainActivity"/>
+-    </Preference>
++        android:summary="@string/openphone_task_grants_summary"/>
+ 
+     <Preference
++        android:fragment="com.android.settings.openphone.OpenPhoneAuditSettings"
+         android:key="openphone_audit"
+         android:title="@string/openphone_audit_title"
+-        android:summary="@string/openphone_audit_summary">
+-        <intent
+-            android:action="android.intent.action.MAIN"
+-            android:targetPackage="org.openphone.assistant"
+-            android:targetClass="org.openphone.assistant.MainActivity"/>
+-    </Preference>
++        android:summary="@string/openphone_audit_summary"/>
+ 
+     <Preference
+         android:key="openphone_support"
+diff --git a/res/xml/openphone_task_grants.xml b/res/xml/openphone_task_grants.xml
+new file mode 100644
+index 00000000000..8bdb0e1fbcd
+--- /dev/null
++++ b/res/xml/openphone_task_grants.xml
+@@ -0,0 +1,48 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Copyright (C) 2026 The OpenPhone Project -->
++<PreferenceScreen
++    xmlns:android="http://schemas.android.com/apk/res/android"
++    android:key="openphone_task_grants"
++    android:title="@string/openphone_task_grants_screen_title">
++
++    <Preference
++        android:key="openphone_grants_intro"
++        android:title="@string/openphone_task_grants_intro_title"
++        android:summary="@string/openphone_task_grants_intro_summary"
++        android:selectable="false"/>
++
++    <Preference
++        android:key="openphone_grant_input"
++        android:title="@string/openphone_grant_input_title"
++        android:summary="@string/openphone_grant_input_summary"
++        android:selectable="false"/>
++
++    <Preference
++        android:key="openphone_grant_screenshot"
++        android:title="@string/openphone_grant_screenshot_title"
++        android:summary="@string/openphone_grant_screenshot_summary"
++        android:selectable="false"/>
++
++    <Preference
++        android:key="openphone_grant_clipboard"
++        android:title="@string/openphone_grant_clipboard_title"
++        android:summary="@string/openphone_grant_clipboard_summary"
++        android:selectable="false"/>
++
++    <Preference
++        android:key="openphone_grant_share"
++        android:title="@string/openphone_grant_share_title"
++        android:summary="@string/openphone_grant_share_summary"
++        android:selectable="false"/>
++
++    <Preference
++        android:key="openphone_assistant_grants"
++        android:title="@string/openphone_assistant_title"
++        android:summary="@string/openphone_assistant_summary">
++        <intent
++            android:action="android.intent.action.MAIN"
++            android:targetPackage="org.openphone.assistant"
++            android:targetClass="org.openphone.assistant.MainActivity"/>
++    </Preference>
++
++</PreferenceScreen>
+diff --git a/src/com/android/settings/openphone/OpenPhoneAuditSettings.java b/src/com/android/settings/openphone/OpenPhoneAuditSettings.java
+new file mode 100644
+index 00000000000..14e56e281da
+--- /dev/null
++++ b/src/com/android/settings/openphone/OpenPhoneAuditSettings.java
+@@ -0,0 +1,91 @@
++/*
++ * Copyright (C) 2026 The OpenPhone Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package com.android.settings.openphone;
++
++import android.app.settings.SettingsEnums;
++import android.content.Context;
++import android.openphone.OpenPhoneAgentManager;
++import android.text.TextUtils;
++
++import androidx.preference.Preference;
++
++import com.android.settings.R;
++import com.android.settings.dashboard.DashboardFragment;
++import com.android.settings.search.BaseSearchIndexProvider;
++import com.android.settingslib.search.SearchIndexable;
++
++@SearchIndexable
++public class OpenPhoneAuditSettings extends DashboardFragment {
++    private static final String TAG = "OpenPhoneAudit";
++    private static final String KEY_SERVICE_STATUS = "openphone_audit_service_status";
++    private static final String KEY_RECENT_AUDIT = "openphone_recent_audit";
++    private static final int MAX_AUDIT_EVENTS = 10;
++    private static final int MAX_SUMMARY_CHARS = 1200;
++
++    @Override
++    public int getMetricsCategory() {
++        return SettingsEnums.DASHBOARD_SUMMARY;
++    }
++
++    @Override
++    protected String getLogTag() {
++        return TAG;
++    }
++
++    @Override
++    protected int getPreferenceScreenResId() {
++        return R.xml.openphone_audit;
++    }
++
++    @Override
++    public void onResume() {
++        super.onResume();
++        updateAuditState();
++    }
++
++    private void updateAuditState() {
++        Context context = getContext();
++        OpenPhoneAgentManager manager = context == null
++                ? null : context.getSystemService(OpenPhoneAgentManager.class);
++        if (manager == null) {
++            setSummary(KEY_SERVICE_STATUS, getString(R.string.openphone_service_unavailable));
++            setSummary(KEY_RECENT_AUDIT, getString(R.string.openphone_audit_empty));
++            return;
++        }
++
++        try {
++            setSummary(KEY_SERVICE_STATUS, summarize(manager.getServiceStatus()));
++            setSummary(KEY_RECENT_AUDIT, summarize(manager.getAuditLog(MAX_AUDIT_EVENTS)));
++        } catch (RuntimeException e) {
++            setSummary(KEY_SERVICE_STATUS, e.getClass().getSimpleName());
++            setSummary(KEY_RECENT_AUDIT, getString(R.string.openphone_audit_empty));
++        }
++    }
++
++    private void setSummary(String key, CharSequence summary) {
++        Preference preference = findPreference(key);
++        if (preference != null) {
++            preference.setSummary(summary);
++        }
++    }
++
++    private String summarize(String value) {
++        if (TextUtils.isEmpty(value)) {
++            return getString(R.string.openphone_audit_empty);
++        }
++        String compact = value.replace(String.valueOf((char) 10), " ")
++                .replace(String.valueOf((char) 13), " ").trim();
++        if (compact.length() <= MAX_SUMMARY_CHARS) {
++            return compact;
++        }
++        return compact.substring(0, MAX_SUMMARY_CHARS) + "...";
++    }
++
++    public static final BaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
++            new BaseSearchIndexProvider(R.xml.openphone_audit);
++}
+diff --git a/src/com/android/settings/openphone/OpenPhoneTaskGrantSettings.java b/src/com/android/settings/openphone/OpenPhoneTaskGrantSettings.java
+new file mode 100644
+index 00000000000..36d35aa3ca8
+--- /dev/null
++++ b/src/com/android/settings/openphone/OpenPhoneTaskGrantSettings.java
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (C) 2026 The OpenPhone Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package com.android.settings.openphone;
++
++import android.app.settings.SettingsEnums;
++
++import com.android.settings.R;
++import com.android.settings.dashboard.DashboardFragment;
++import com.android.settings.search.BaseSearchIndexProvider;
++import com.android.settingslib.search.SearchIndexable;
++
++@SearchIndexable
++public class OpenPhoneTaskGrantSettings extends DashboardFragment {
++    private static final String TAG = "OpenPhoneTaskGrants";
++
++    @Override
++    public int getMetricsCategory() {
++        return SettingsEnums.DASHBOARD_SUMMARY;
++    }
++
++    @Override
++    protected String getLogTag() {
++        return TAG;
++    }
++
++    @Override
++    protected int getPreferenceScreenResId() {
++        return R.xml.openphone_task_grants;
++    }
++
++    public static final BaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
++            new BaseSearchIndexProvider(R.xml.openphone_task_grants);
++}
+-- 
+2.39.5

@@ -6,7 +6,9 @@ import android.net.Uri;
 import android.openphone.OpenPhoneAgentManager;
 
 import org.json.JSONException;
+import org.json.JSONArray;
 import org.json.JSONObject;
+import org.openphone.assistant.OpenPhoneAccessibilityService;
 
 public final class FrameworkToolExecutor {
     private final Context mContext;
@@ -27,7 +29,9 @@ public final class FrameworkToolExecutor {
         try {
             switch (toolName) {
                 case "get_screen":
-                    return mAgentManager.getScreen(taskId, arguments.toString());
+                    return getScreen(taskId, arguments);
+                case "watch_screen":
+                    return watchScreen(taskId, arguments);
                 case "open_app":
                     String requestedPackage = packageName(arguments.optString("package",
                             arguments.optString("package_or_label")));
@@ -73,6 +77,17 @@ public final class FrameworkToolExecutor {
                             .put("text", arguments.optString("text"))
                             .put("chooser_title", arguments.optString("chooser_title"))
                             .put("reason", arguments.optString("reason")).toString());
+                case "wait":
+                    return waitFor(arguments.optLong("duration_ms", 1000),
+                            arguments.optString("reason"));
+                case "ask_user_confirmation":
+                    return new JSONObject()
+                            .put("status", "confirmation_requested")
+                            .put("summary", arguments.optString("summary"))
+                            .put("risk", arguments.optString("risk"))
+                            .put("action", arguments.optJSONObject("action_json") == null
+                                    ? new JSONObject() : arguments.optJSONObject("action_json"))
+                            .toString();
                 case "finish_task":
                     return status("task.finished", arguments.optString("summary"));
                 case "fail_task":
@@ -83,6 +98,54 @@ public final class FrameworkToolExecutor {
         } catch (JSONException e) {
             return error("json_error:" + e.getMessage());
         }
+    }
+
+    private String getScreen(String taskId, JSONObject arguments) throws JSONException {
+        String screen = mAgentManager.getScreen(taskId, arguments.toString());
+        return enrichScreenResult(screen, arguments);
+    }
+
+    private String watchScreen(String taskId, JSONObject arguments) throws JSONException {
+        long durationMs = Math.max(500, Math.min(arguments.optLong("duration_ms", 1500), 5000));
+        int fps = Math.max(1, Math.min(arguments.optInt("fps", 1), 5));
+        JSONObject boundedArguments = new JSONObject(arguments.toString())
+                .put("duration_ms", durationMs)
+                .put("fps", fps);
+        String screen = mAgentManager.watchScreen(taskId, boundedArguments.toString());
+        return enrichScreenResult(screen, boundedArguments);
+    }
+
+    private String enrichScreenResult(String screen, JSONObject arguments) throws JSONException {
+        if (!arguments.optBoolean("include_ui_tree", false)) {
+            return screen;
+        }
+        JSONObject screenJson = new JSONObject(screen);
+        JSONObject uiTree = new JSONObject(OpenPhoneAccessibilityService.snapshotJson());
+        screenJson.put("ui_tree", uiTree);
+        JSONArray visibleText = uiTree.optJSONArray("visible_text");
+        if (visibleText != null) {
+            screenJson.put("visible_text", visibleText);
+        }
+        JSONArray elements = uiTree.optJSONArray("interactive_elements");
+        if (elements != null) {
+            screenJson.put("interactive_elements", elements);
+        }
+        return screenJson.toString();
+    }
+
+    private static String waitFor(long durationMs, String reason) throws JSONException {
+        long boundedDurationMs = Math.max(250, Math.min(durationMs, 5000));
+        try {
+            Thread.sleep(boundedDurationMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return error("interrupted");
+        }
+        return new JSONObject()
+                .put("status", "waited")
+                .put("duration_ms", boundedDurationMs)
+                .put("reason", reason == null ? "" : reason)
+                .toString();
     }
 
     private String openUrl(String url) throws JSONException {

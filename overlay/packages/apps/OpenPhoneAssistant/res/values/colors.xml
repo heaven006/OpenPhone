@@ -1,7 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="openphone_background">#101418</color>
+    <color name="openphone_surface">#171C20</color>
+    <color name="openphone_surface_high">#20262B</color>
+    <color name="openphone_stroke">#2F3940</color>
+    <color name="openphone_accent">#72E0C4</color>
+    <color name="openphone_accent_pressed">#5CC8AE</color>
+    <color name="openphone_danger">#F0706A</color>
     <color name="openphone_text_primary">#F4F7F8</color>
     <color name="openphone_text_secondary">#AAB4BA</color>
+    <color name="openphone_text_muted">#75828A</color>
 </resources>
-
