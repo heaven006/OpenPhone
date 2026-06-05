@@ -17,6 +17,10 @@ import org.openphone.assistant.policy.PolicyEngine;
 
 public final class OpenPhoneAssistantService extends Service {
     private static final String TAG = "OpenPhoneAssistant";
+    static final String ACTION_HIDE_ISLAND =
+            "org.openphone.assistant.action.HIDE_ISLAND";
+    static final String ACTION_SHOW_MIC_ISLAND =
+            "org.openphone.assistant.action.SHOW_MIC_ISLAND";
 
     private OpenPhoneAgentManager mAgentManager;
     private PointerOverlayController mPointerOverlayController;
@@ -102,12 +106,21 @@ public final class OpenPhoneAssistantService extends Service {
         }
         Log.i(TAG, "OpenPhone framework service status: " + mAgentManager.getServiceStatus());
         Log.i(TAG, "OpenPhone assistant service created");
+        mPointerOverlayController.showMicButton();
         OpenPhoneNotificationController.showReady(this);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
+        if (ACTION_HIDE_ISLAND.equals(action)) {
+            mPointerOverlayController.hide();
+            return START_STICKY;
+        }
+        if (ACTION_SHOW_MIC_ISLAND.equals(action)) {
+            mPointerOverlayController.showMicButton();
+            return START_STICKY;
+        }
         if (OpenPhoneNotificationController.ACTION_START.equals(action)) {
             mNotificationTaskId = startNotificationTask();
             mPointerOverlayController.show(mNotificationTaskId);
@@ -118,6 +131,7 @@ public final class OpenPhoneAssistantService extends Service {
             stopNotificationTask();
             return START_STICKY;
         }
+        mPointerOverlayController.showMicButton();
         OpenPhoneNotificationController.showReady(this);
         return START_STICKY;
     }
@@ -169,7 +183,7 @@ public final class OpenPhoneAssistantService extends Service {
         } finally {
             mNotificationTaskId = null;
             if (mPointerOverlayController != null) {
-                mPointerOverlayController.hide();
+                mPointerOverlayController.showMicButton();
             }
             OpenPhoneNotificationController.showReady(this);
         }

@@ -48,6 +48,8 @@ public final class MainActivity extends Activity {
     private static final String EXTRA_GOAL_BASE64 =
             "org.openphone.assistant.extra.GOAL_BASE64";
     private static final String EXTRA_RUN = "org.openphone.assistant.extra.RUN";
+    static final String EXTRA_START_VOICE =
+            "org.openphone.assistant.extra.START_VOICE";
 
     private static final int REQUEST_RECORD_AUDIO = 1001;
     private static final int VOICE_CAPTURE_MILLIS = 5000;
@@ -107,6 +109,8 @@ public final class MainActivity extends Activity {
         mPointerOverlayController = new PointerOverlayController(this);
         OpenPhoneAccessibilityService.ensureEnabled(this);
         setContentView(buildView());
+        setServiceIslandVisible(false);
+        mPointerOverlayController.showMicButton();
         refreshAll();
         applyDebugIntentExtras(getIntent());
     }
@@ -114,6 +118,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        setServiceIslandVisible(false);
         OpenPhoneAccessibilityService.ensureEnabled(this);
     }
 
@@ -130,7 +135,19 @@ public final class MainActivity extends Activity {
         if (mPointerOverlayController != null) {
             mPointerOverlayController.hide();
         }
+        setServiceIslandVisible(true);
         super.onDestroy();
+    }
+
+    private void setServiceIslandVisible(boolean visible) {
+        Intent intent = new Intent(this, OpenPhoneAssistantService.class);
+        intent.setAction(visible
+                ? OpenPhoneAssistantService.ACTION_SHOW_MIC_ISLAND
+                : OpenPhoneAssistantService.ACTION_HIDE_ISLAND);
+        try {
+            startService(intent);
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private void applyDebugIntentExtras(Intent intent) {
@@ -157,6 +174,14 @@ public final class MainActivity extends Activity {
                 @Override
                 public void run() {
                     startAgentFromCurrentGoal();
+                }
+            });
+        }
+        if (intent.getBooleanExtra(EXTRA_START_VOICE, false)) {
+            mGoalInput.post(new Runnable() {
+                @Override
+                public void run() {
+                    startVoiceAgent();
                 }
             });
         }
@@ -188,15 +213,6 @@ public final class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20), dp(52), dp(20), dp(28));
         scrollView.addView(root);
-
-        mIslandView = label("Ready", 14, true);
-        mIslandView.setTextColor(getColor(R.color.openphone_accent));
-        mIslandView.setGravity(android.view.Gravity.CENTER);
-        mIslandView.setTypeface(Typeface.DEFAULT_BOLD);
-        mIslandView.setBackground(pillBackground(R.color.openphone_surface_high,
-                R.color.openphone_stroke));
-        mIslandView.setPadding(dp(18), dp(10), dp(18), dp(10));
-        root.addView(mIslandView, blockParams());
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
@@ -845,8 +861,12 @@ public final class MainActivity extends Activity {
     }
 
     private void updateIsland(String text) {
+        String status = text == null || text.isEmpty() ? "OpenPhone is ready" : text;
         if (mIslandView != null) {
-            mIslandView.setText(text == null || text.isEmpty() ? "OpenPhone is ready" : text);
+            mIslandView.setText(status);
+        }
+        if (mPointerOverlayController != null) {
+            mPointerOverlayController.setStatus(status);
         }
     }
 
@@ -962,7 +982,7 @@ public final class MainActivity extends Activity {
             mPendingActionId = null;
             clearPendingToolAction();
             hidePendingConfirmation();
-            mPointerOverlayController.hide();
+            mPointerOverlayController.showMicButton();
             OpenPhoneNotificationController.showReady(this);
         }
         mTaskView.setText("Task stopped");
@@ -1102,14 +1122,13 @@ public final class MainActivity extends Activity {
                         mAgentThread = null;
                         mRunningModelAdapter = null;
                         if (mAgentRunCancelled || isCancelledResult(result)) {
-                            mPointerOverlayController.hide();
+                            mPointerOverlayController.showMicButton();
                             mTaskView.setText("Task stopped"
                                     + "\n\nTrajectory: " + trajectory.sessionPath());
                             updateIsland("Stopped");
                             refreshAudit();
                             return;
                         }
-                        mPointerOverlayController.hide();
                         mTaskView.setText(agentResultForDisplay(result)
                                 + "\n\nTrajectory: " + trajectory.sessionPath());
                         showConfirmationIfNeeded(result);
