@@ -15,7 +15,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 public final class OpenAiRealtimeAdapter implements ModelAdapter {
-    private static final String MODEL = "gpt-4.1-mini";
+    private static final String MODEL = "gpt-5.5";
     private static final int MAX_STEPS = 25;
     private static final int MAX_CONSECUTIVE_TOOL_ERRORS = 2;
     private static final int MAX_CONSECUTIVE_NO_PROGRESS_ACTIONS = 2;
@@ -139,6 +139,16 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 ensureToolReason(toolName, arguments, decision.optString("thought", ""));
                 stepJson.put("arguments", arguments);
                 stepJson.put("tool", toolName);
+
+                if (shouldAutoFinishSatisfiedOpenGoal(userGoal, screenJson, toolName)) {
+                    toolName = "finish_task";
+                    arguments = new JSONObject()
+                            .put("summary", "The requested app or site is visible.");
+                    stepJson.put("thought", "The requested app or site is already visible. "
+                            + "Finish instead of interacting with login or install surfaces.");
+                    stepJson.put("tool", toolName);
+                    stepJson.put("arguments", arguments);
+                }
 
                 if ("finish_task".equals(toolName)) {
                     JSONObject finishEvidence = finishEvidence(userGoal, screenJson);
@@ -520,21 +530,6 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
 
         String screenText = normalizedScreenText(screenJson);
         String goal = userGoal == null ? "" : userGoal.toLowerCase(Locale.US);
-        if (isSimpleOpenGoalSatisfied(goal, screenText)
-                && ("tap".equals(toolName) || "tap_element".equals(toolName)
-                        || "long_press".equals(toolName) || "long_press_element".equals(toolName)
-                        || "type_text".equals(toolName))) {
-            return new JSONObject()
-                    .put("summary", "The requested app or site already appears to be open. "
-                            + "The agent should finish instead of interacting further.")
-                    .put("risk", "Medium")
-                    .put("reason", "Avoid unnecessary action after a simple open task is satisfied.")
-                    .put("capability", capabilityForTool(toolName))
-                    .put("action_json", new JSONObject()
-                            .put("tool", "finish_task")
-                            .put("arguments", new JSONObject()
-                                    .put("summary", "The requested app or site is visible.")));
-        }
         String risk = "";
         String summary = "";
         if (containsAny(screenText, "install", "update", "download", "get app",
@@ -609,6 +604,17 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
             return true;
         }
         return false;
+    }
+
+    private static boolean shouldAutoFinishSatisfiedOpenGoal(String userGoal, JSONObject screenJson,
+            String toolName) throws JSONException {
+        if (!("tap".equals(toolName) || "tap_element".equals(toolName)
+                || "long_press".equals(toolName) || "long_press_element".equals(toolName)
+                || "type_text".equals(toolName) || "press_key".equals(toolName))) {
+            return false;
+        }
+        String goal = userGoal == null ? "" : userGoal.toLowerCase(Locale.US);
+        return isSimpleOpenGoalSatisfied(goal, normalizedScreenText(screenJson));
     }
 
     private static String capabilityForTool(String toolName) {
@@ -721,14 +727,19 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
 
     private static JSONObject finishEvidence(String userGoal, JSONObject screenJson)
             throws JSONException {
-        String visibleText = joinedArray(screenJson.optJSONArray("visible_text"), 80);
-        JSONArray elements = screenJson.optJSONArray("interactive_elements");
+        JSONArray visibleTextArray = screenArray(screenJson, "visible_text");
+        String visibleText = joinedArray(visibleTextArray, 80);
+        JSONArray elements = screenArray(screenJson, "interactive_elements");
         int elementCount = elements == null ? 0 : elements.length();
         JSONObject screenshot = screenJson.optJSONObject("screenshot");
         boolean hasScreenshot = screenshot != null && !screenshot.optString("data").isEmpty();
         JSONArray matchedTerms = new JSONArray();
         JSONArray requiredTerms = finishEvidenceTerms(userGoal);
         String haystack = visibleText.toLowerCase(Locale.US);
+        String goal = userGoal == null ? "" : userGoal.toLowerCase(Locale.US);
+        if (isSimpleOpenGoalSatisfied(goal, haystack)) {
+            matchedTerms.put("simple_open_goal_visible");
+        }
         for (int i = 0; i < requiredTerms.length(); i++) {
             String term = requiredTerms.optString(i);
             if (!term.isEmpty() && haystack.contains(term.toLowerCase(Locale.US))) {
@@ -743,11 +754,22 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 .put("has_screen_evidence", (hasStructuredEvidence || hasScreenshot)
                         && hasTermEvidence)
                 .put("has_screenshot", hasScreenshot)
-                .put("visible_text_count", screenJson.optJSONArray("visible_text") == null
-                        ? 0 : screenJson.optJSONArray("visible_text").length())
+                .put("visible_text_count", visibleTextArray == null ? 0 : visibleTextArray.length())
                 .put("interactive_element_count", elementCount)
                 .put("required_terms", requiredTerms)
                 .put("matched_terms", matchedTerms);
+    }
+
+    private static JSONArray screenArray(JSONObject screenJson, String name) {
+        if (screenJson == null) {
+            return null;
+        }
+        JSONArray direct = screenJson.optJSONArray(name);
+        if (direct != null) {
+            return direct;
+        }
+        JSONObject uiTree = screenJson.optJSONObject("ui_tree");
+        return uiTree == null ? null : uiTree.optJSONArray(name);
     }
 
     private static JSONArray finishEvidenceTerms(String userGoal) {

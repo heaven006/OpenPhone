@@ -1102,12 +1102,14 @@ public final class MainActivity extends Activity {
                         mAgentThread = null;
                         mRunningModelAdapter = null;
                         if (mAgentRunCancelled || isCancelledResult(result)) {
+                            mPointerOverlayController.hide();
                             mTaskView.setText("Task stopped"
                                     + "\n\nTrajectory: " + trajectory.sessionPath());
                             updateIsland("Stopped");
                             refreshAudit();
                             return;
                         }
+                        mPointerOverlayController.hide();
                         mTaskView.setText(agentResultForDisplay(result)
                                 + "\n\nTrajectory: " + trajectory.sessionPath());
                         showConfirmationIfNeeded(result);
