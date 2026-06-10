@@ -16,7 +16,7 @@ import java.util.Locale;
 
 public final class WatcherStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "openphone_watchers.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
 
     public WatcherStore(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -55,13 +55,15 @@ public final class WatcherStore extends SQLiteOpenHelper {
                 + "INSERT INTO watcher_fts(rowid, type, title, condition_json) "
                 + "VALUES (new.id, new.type, new.title, new.condition_json); END");
         db.execSQL("CREATE INDEX watcher_status_idx ON watcher(status, next_run_at)");
+        db.execSQL("CREATE INDEX watcher_type_idx ON watcher(type, status)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        db.execSQL("DROP TABLE IF EXISTS watcher_fts");
-        db.execSQL("DROP TABLE IF EXISTS watcher");
-        onCreate(db);
+        // Durable user data: migrations must be additive and stepwise, never DROP TABLE.
+        if (oldVersion < 2) {
+            db.execSQL("CREATE INDEX IF NOT EXISTS watcher_type_idx ON watcher(type, status)");
+        }
     }
 
     public long createWatcher(String type, String title, String conditionJson,

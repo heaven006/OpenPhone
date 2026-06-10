@@ -16,7 +16,7 @@ import java.util.Locale;
 
 public final class CommitmentStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "openphone_commitments.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
 
     public CommitmentStore(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -55,13 +55,16 @@ public final class CommitmentStore extends SQLiteOpenHelper {
                 + "VALUES (new.id, new.title, new.description, new.trigger_type); END");
         db.execSQL("CREATE INDEX commitment_status_idx ON commitment(status, due_at)");
         db.execSQL("CREATE INDEX commitment_title_idx ON commitment(normalized_title)");
+        db.execSQL("CREATE INDEX commitment_updated_idx ON commitment(deleted_at, updated_at)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        db.execSQL("DROP TABLE IF EXISTS commitment_fts");
-        db.execSQL("DROP TABLE IF EXISTS commitment");
-        onCreate(db);
+        // Durable user data: migrations must be additive and stepwise, never DROP TABLE.
+        if (oldVersion < 2) {
+            db.execSQL("CREATE INDEX IF NOT EXISTS commitment_updated_idx "
+                    + "ON commitment(deleted_at, updated_at)");
+        }
     }
 
     public long createExplicitCommitment(String title, long dueAtMillis, String evidenceJson) {

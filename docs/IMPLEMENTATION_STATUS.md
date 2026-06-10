@@ -5,7 +5,7 @@ This document tracks current implementation evidence against `SPEC.md`.
 ## Current Snapshot
 
 As of the current repository manifest, the assistant package is
-`versionCode=110`, `versionName=0.1.74-dev`.
+`versionCode=111`, `versionName=0.1.75-dev`.
 
 **Tree state (2026-06-11):** the working tree compiles and
 `./scripts/check.sh` is fully green, including the Java compile gate added
@@ -16,14 +16,14 @@ watcher evaluation, browser/page context deepening, model-backed AI Sheet
 screen answers, message-reply watchers, the AI Island 8-state machine
 with YOLO visual state, calendar depth —
 update/delete/check-availability — and phone depth — missed-call
-follow-ups + call-back watchers) passed reviewed device smokes. See
+follow-ups + call-back watchers) passed reviewed device smokes, plus the
+first Phase 10 hardening slice (OTA-safe store migrations). See
 "Architecture Audit and Revised Direction" below for the full record.
 
-The last fully validated slice is phone depth v2
-(`.worktree/artifacts/tegu/OpenPhoneAssistant-phone-depth-v2.apk`,
-`sha256=a5ca805bb278bfcda6f8d80c46fc8815c3ec6bfe6cfd79f11c7d025138f45ac8`,
-v110 0.1.74-dev, installed, registry/model-tools/capabilities configs
-pushed to `/system_ext/etc/openphone/`), with the device reset to
+The last fully validated slice is OTA-safe store migrations
+(`.worktree/artifacts/tegu/OpenPhoneAssistant-store-migrations-v1.apk`,
+`sha256=836386006f674184142de377861cc3582ebda4a0755449e84c6e4c46cd74baad`,
+v111 0.1.75-dev, installed), with the device reset to
 `openphone_autonomy_mode=reviewed`.
 
 Current physically validated Pixel 9a baseline:
@@ -1642,6 +1642,64 @@ Cleanup: call log, contact, SMS fixture rows and smoke watchers
 deleted; watcher census back to 4 active; autonomy mode reset to
 `reviewed`; dev key confirmed null; adb unrooted.
 
+### Phase 10 hardening: OTA-safe store migrations (2026-06-11)
+
+First slice of the Phase 10 promotion/hardening track. All four
+assistant SQLite stores (`WatcherStore`, `CommitmentStore`,
+`MemoryStore`, `ContextIndexStore`) previously had `DB_VERSION=1` with
+a destructive `onUpgrade` (`DROP TABLE` + recreate) — any future schema
+bump would have silently wiped durable user data (watchers,
+commitments, memories, the context index) on OTA. This directly
+violated the Phase 10 spec item "Add OTA-safe migrations for
+context/memory/commitment databases".
+
+Implementation (each store):
+
+- `DB_VERSION` 1 → 2; `onUpgrade` rewritten to stepwise additive
+  migrations (`if (oldVersion < 2) { … }`) with the invariant comment
+  "Durable user data: migrations must be additive and stepwise, never
+  DROP TABLE."
+- Each v2 migration adds a genuinely useful index derived from that
+  store's hot query pattern (also added to `onCreate` for fresh
+  installs):
+  - `watcher_type_idx ON watcher(type, status)` — `activeByType`
+    drives message-reply/call-back baseline scans.
+  - `commitment_updated_idx ON commitment(deleted_at, updated_at)` —
+    FTS-join and active listings order by `updated_at` with
+    `deleted_at IS NULL`.
+  - `memory_normalized_idx ON memory(normalized_text)` — the dedupe
+    lookup `SELECT id FROM memory WHERE normalized_text = ?` ran
+    unindexed on every memory save (UNIQUE constraint exists, but the
+    explicit index keeps the lookup path covered if the constraint is
+    ever relaxed in a migration).
+  - `context_event_recent_idx ON context_event(deleted_at,
+    observed_at)` — every recents/search query filters
+    `deleted_at IS NULL ORDER BY observed_at DESC`.
+
+Artifact: `OpenPhoneAssistant-store-migrations-v1.apk` (v111
+0.1.75-dev, sha256
+`836386006f674184142de377861cc3582ebda4a0755449e84c6e4c46cd74baad`,
+installed). No registry/config changes.
+
+Device acceptance (Pixel 9a, real upgrade path v110→v111 over live v1
+databases):
+
+1. Pre-push under v110: `PRAGMA user_version` = 1 in all four DBs;
+   marker rows (`MIGRATION_MARKER_V1`) inserted into each table
+   alongside real data (13 watcher rows, 1271 context events).
+2. Pushed v111 (device reboot), exercised each store (watcher check
+   broadcast; an assistant memory-search task for the lazily-opened
+   `MemoryStore`): `PRAGMA user_version` = 2 in all four DBs — the
+   stepwise `onUpgrade` ran in place, no recreate.
+3. All four marker rows survived; row counts preserved (13 watchers;
+   context index grew 1271 → 1282 from the new session's own events —
+   nothing lost); all four new indices present in `sqlite_master`;
+   FTS still functional post-migration (`watcher_fts MATCH` found the
+   marker before cleanup).
+
+Cleanup: marker rows deleted; dev key confirmed null; autonomy mode
+`reviewed`; adb unrooted.
+
 ## Not Yet Implemented
 
 - Hardware validation on the Pixel 9a. Full OpenPhone now boots and the
@@ -2371,11 +2429,13 @@ screen answers, message-reply watchers, the AI Island 8-state machine
 with YOLO visual state, calendar depth —
 update/delete/check-availability — and phone depth — missed-call
 follow-ups, contact-name joins, call-back watchers) are complete and
-device-validated (see the Phase C slice sections above). Continue
-Phase C: next up is promotion of
-assistant-local stores into OS-owned services — one slice at a time,
-each closing with the standard EC2 build / install / reviewed + YOLO
-smoke / evidence flow.
+device-validated (see the Phase C slice sections above), and the first
+Phase 10 hardening slice (OTA-safe store migrations: all four stores
+now use stepwise additive `onUpgrade`, validated with a real v1→v2
+upgrade on device) is done. Continue the Phase 10 promotion track:
+promote assistant-local stores into OS-owned services — one slice at a
+time, each closing with the standard EC2 build / install / reviewed +
+YOLO smoke / evidence flow (framework changes need full OTA).
 
 Standing workflow rules remain unchanged: use the privileged assistant APK
 push for assistant-only changes and full OTA only for framework/sepolicy/

@@ -16,7 +16,7 @@ import java.util.Locale;
 
 public final class MemoryStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "openphone_memory.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
 
     public MemoryStore(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -50,13 +50,16 @@ public final class MemoryStore extends SQLiteOpenHelper {
                 + "INSERT INTO memory_fts(rowid, type, subject, text) "
                 + "VALUES (new.id, new.type, new.subject, new.text); END");
         db.execSQL("CREATE INDEX memory_status_idx ON memory(status, updated_at)");
+        db.execSQL("CREATE INDEX memory_normalized_idx ON memory(normalized_text)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        db.execSQL("DROP TABLE IF EXISTS memory_fts");
-        db.execSQL("DROP TABLE IF EXISTS memory");
-        onCreate(db);
+        // Durable user data: migrations must be additive and stepwise, never DROP TABLE.
+        if (oldVersion < 2) {
+            db.execSQL("CREATE INDEX IF NOT EXISTS memory_normalized_idx "
+                    + "ON memory(normalized_text)");
+        }
     }
 
     public long saveExplicitMemory(String text, String evidenceJson) {

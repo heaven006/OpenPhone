@@ -1772,6 +1772,10 @@ Tasks:
 - Strengthen broker identity/session handling.
 - Add production-grade audit storage and export.
 - Add OTA-safe migrations for context/memory/commitment databases.
+  (DONE 2026-06-11, v111: all four stores — watcher, commitment, memory,
+  context index — use stepwise additive `onUpgrade` instead of
+  DROP TABLE; validated on device with a real v1→v2 upgrade over live
+  data.)
 - Add release/eval test suites.
 
 Exit criteria:

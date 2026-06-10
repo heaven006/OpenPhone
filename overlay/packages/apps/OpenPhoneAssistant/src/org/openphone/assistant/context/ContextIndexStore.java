@@ -16,7 +16,7 @@ import java.util.List;
 
 public final class ContextIndexStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "openphone_context_index.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
     private static final String SOURCE_APP = "org.openphone.assistant";
     private static final String CHAT_PREFS_NAME = "openphone_chat_history";
     private static final String KEY_CURRENT_MESSAGES = "current_messages";
@@ -60,13 +60,17 @@ public final class ContextIndexStore extends SQLiteOpenHelper {
                 + "source_type, observed_at)");
         db.execSQL("CREATE INDEX context_event_record_idx ON context_event("
                 + "source_record_id)");
+        db.execSQL("CREATE INDEX context_event_recent_idx ON context_event("
+                + "deleted_at, observed_at)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        db.execSQL("DROP TABLE IF EXISTS context_event_fts");
-        db.execSQL("DROP TABLE IF EXISTS context_event");
-        onCreate(db);
+        // Durable user data: migrations must be additive and stepwise, never DROP TABLE.
+        if (oldVersion < 2) {
+            db.execSQL("CREATE INDEX IF NOT EXISTS context_event_recent_idx "
+                    + "ON context_event(deleted_at, observed_at)");
+        }
     }
 
     public long recordConversationMessage(String speaker, String message) {
