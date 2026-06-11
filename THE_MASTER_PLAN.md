@@ -1777,7 +1777,15 @@ Tasks:
   binder smokes pass.)
 - Separate assistant UI, orchestrator, and executors.
 - Strengthen broker identity/session handling.
-- Add production-grade audit storage and export.
+- Add production-grade audit storage and export. (FIRST SLICE DONE
+  2026-06-11: tamper-evident hash chain on `audit-log.json` —
+  every event carries `seq`, `boot_id`, `prev_hash`, and `hash`;
+  `readPersistentAudit` verifies the chain on startup and exposes
+  `audit_chain_verified`/`audit_chain_error` via `getServiceStatus`;
+  size-based rotation to `audit-log.<wallclock>.json` archives.
+  Patch `patches/frameworks_base/0016`. Tamper-evidence verified on
+  device by editing one event and confirming the suffix from the
+  corruption point gets dropped on next read.)
 - Add OTA-safe migrations for context/memory/commitment databases.
   (DONE 2026-06-11, v111: all four stores — watcher, commitment, memory,
   context index — use stepwise additive `onUpgrade` instead of

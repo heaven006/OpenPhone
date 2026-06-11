@@ -2042,6 +2042,103 @@ Device validation (Pixel 9a, post-OTA, post-APK push, `getenforce`
 Cleanup: rows 5 and 6 tombstoned, autonomy back to `reviewed`,
 adb unrooted.
 
+### Phase 10 hardening: tamper-evident audit log with hash chain (2026-06-11)
+
+Second slice of the Phase 10 hardening track: production-grade audit
+storage. The OS audit log
+(`/data/system/openphone/audit-log.json`, owned by `system_server`,
+labeled `openphone_system_data_file` from the previous slice) was a
+plain JSON ring buffer of 200 events with no integrity story — anyone
+who could write the file could insert, modify, or remove events
+without leaving a trace. This slice turns it into a tamper-evident
+hash-chained log.
+
+Patch:
+- `patches/frameworks_base/0016-OpenPhone-tamper-evident-audit-log.patch`
+  (EC2 commit `c93d988ea4c8`). Each audit event recorded by
+  `OpenPhoneAgentManagerService.recordAudit` now carries:
+  - `seq` — monotonically increasing counter starting at 1.
+  - `boot_id` — random UUID generated when system_server starts (so
+    a snapshot from boot N cannot be replayed under boot N+1).
+  - `timestamp_wall_ms` — wall-clock at write time, supplementing
+    the existing `timestamp_elapsed_ms`.
+  - `prev_hash` — hex SHA-256 of the previous event's `hash`
+    (genesis = 64 zeros).
+  - `hash` — hex SHA-256 of the event JSON minus the `hash` field
+    itself.
+  On startup, `readPersistentAudit` walks the persisted file from
+  index 0, recomputes every hash, checks `seq` continuity and
+  `prev_hash` linkage. If verification fails, the chain is truncated
+  to the last verified event, the suffix (including the tampered
+  event) is dropped from memory, and `mAuditChainVerified` is set
+  to false with `mAuditChainError` describing where the break was
+  (`hash_mismatch_at_seq_3`, `prev_hash_mismatch_at_seq_5`,
+  `seq_gap_at_4_expected_5_got_7`, etc.).
+  `getServiceStatus()` and `getAuditLog()` now expose
+  `audit_log_version=2`, `audit_chain_verified`,
+  `audit_chain_error`, `audit_chain_head`, `audit_seq`, and
+  `boot_id` so an external auditor can detect tampering or chain
+  resets.
+  When the live file passes 256KB it is archived as
+  `audit-log.<yyyyMMdd-HHmmss>.json` and the oldest archives are
+  trimmed to keep at most 5.
+
+Build & install:
+- Full OTA `openphone_tegu-audit-hardening-ota.zip` sha256
+  `65bdad409a1796ad2237b22e9e4ae76130ed3e7c595cbd90a61476e8f6cb1163`.
+  Sideloaded; `ro.build.version.incremental` 1781175115 → 1781177588.
+
+Device validation (Pixel 9a, post-OTA, autonomy `yolo` for
+audit-producing tasks, then `reviewed` for cleanup):
+
+1. After the first audit event post-OTA, `audit-log.json` was
+   rewritten in `version=2` format with all chain fields populated
+   on every event:
+   ```
+   version: 2, audit_seq: 2, boot_id: 2a4c109f-…
+   event[0] seq=1, prev_hash=000…000, hash=5618e3b8…
+   event[1] seq=2, prev_hash=5618e3b8…, hash=320cce80…
+   ```
+   `chain_head` matches the last event's `hash`; each event's
+   `prev_hash` matches the predecessor's `hash`.
+2. **Tamper-evidence smoke** (the marquee test):
+   - Built up 6 audit events (audit_seq=6).
+   - Stopped `system_server` with `adb shell stop`.
+   - Pulled the file, edited event 2's `detail` field from
+     `grants=[clipboard.read, network.use, …]` to
+     `TAMPERED_BY_TEST`, pushed it back with original ownership
+     (`system:system 600`) and SELinux label.
+   - Started `system_server` again and triggered another assistant
+     task to fire a `recordAudit`.
+   - Result: the persisted file now contains only **4 events** —
+     events 1–2 (the verified prefix, with their original hashes
+     `d5ac2e0c…` and `f8e03113…` intact), and two fresh events
+     (seq=3, seq=4) chaining from event 2's hash with the
+     tampered event silently dropped. Chain semantics: tampering
+     causes the suffix from the corruption point onward to be
+     discarded, so the audit log can only ever lose past events
+     to an attacker, never gain or modify them undetectably.
+3. End-to-end binder write smoke under `autonomy=yolo` —
+   `run-assistant-task.sh memory_save` returned the new memory id
+   and the OS DB showed the row, proving the existing assistant
+   data binder path is unaffected by the audit hardening.
+4. SELinux file label still `openphone_system_data_file:s0` after
+   both restart and `recordAudit` rewrites — the previous
+   hardening slice composes correctly.
+
+Cleanup: stale `audit-log.v1-pre-ota.json` removed, autonomy back
+to `reviewed`, adb unrooted.
+
+Honest gaps (recorded for the next iteration of this track): the
+current "fail closed" behavior **discards** tampered events
+instead of preserving them in a sealed `tampered-audit.json`
+archive that an auditor can inspect. The slog `OpenPhone audit
+chain BROKEN` line did not appear in `logcat -d` after the
+tamper-then-restart sequence — likely because the constructor
+runs before logcat starts buffering system_server's PID; an
+auditor would see the broken state via the
+`audit_chain_verified=false` field returned by `getServiceStatus`.
+
 ## Not Yet Implemented
 
 - Hardware validation on the Pixel 9a. Full OpenPhone now boots and the
