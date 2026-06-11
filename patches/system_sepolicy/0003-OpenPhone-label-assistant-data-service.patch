@@ -1,0 +1,51 @@
+From 2e035abc254821ddc47c421d899aeeddba06beae Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Thu, 11 Jun 2026 06:44:45 +0000
+Subject: [PATCH] OpenPhone: label assistant data service
+
+Change-Id: I6b8c0d2e4f60718293a4b5c6d7e8f90a1b2c3d4e
+---
+ build/soong/service_fuzzer_bindings.go | 1 +
+ private/service.te                     | 1 +
+ private/service_contexts               | 1 +
+ 3 files changed, 3 insertions(+)
+
+diff --git a/build/soong/service_fuzzer_bindings.go b/build/soong/service_fuzzer_bindings.go
+index 7c06d9069..1ffb15a46 100644
+--- a/build/soong/service_fuzzer_bindings.go
++++ b/build/soong/service_fuzzer_bindings.go
+@@ -395,6 +395,7 @@ var (
+ 		"ondevicepersonalization_system_service": EXCEPTION_NO_FUZZER,
+ 		"on_device_intelligence":                 EXCEPTION_NO_FUZZER,
+ 		"openphone_agent":                        EXCEPTION_NO_FUZZER,
++		"openphone_assistant_data":               EXCEPTION_NO_FUZZER,
+ 		"openphone_context":                      EXCEPTION_NO_FUZZER,
+ 		"ot_daemon":                              []string{"ot_daemon_service_fuzzer"},
+ 		"overlay":                                EXCEPTION_NO_FUZZER,
+diff --git a/private/service.te b/private/service.te
+index 690d76979..52ee09a98 100644
+--- a/private/service.te
++++ b/private/service.te
+@@ -17,6 +17,7 @@ type logd_service,                   service_manager_type;
+ type mediatuner_service,             app_api_service, service_manager_type;
+ type mmd_service,                    service_manager_type;
+ type openphone_agent_service,        system_api_service, system_server_service, service_manager_type;
++type openphone_assistant_data_service, system_api_service, system_server_service, service_manager_type;
+ type openphone_context_service,      system_api_service, system_server_service, service_manager_type;
+ type on_device_intelligence_service, app_api_service, system_server_service, service_manager_type, isolated_compute_allowed_service;
+ type omapi_service,                  service_manager_type;
+diff --git a/private/service_contexts b/private/service_contexts
+index 187a55661..41fd1f456 100644
+--- a/private/service_contexts
++++ b/private/service_contexts
+@@ -387,6 +387,7 @@ oem_lock                                  u:object_r:oem_lock_service:s0
+ ondevicepersonalization_system_service    u:object_r:ondevicepersonalization_system_service:s0
+ on_device_intelligence                    u:object_r:on_device_intelligence_service:s0
+ openphone_agent                          u:object_r:openphone_agent_service:s0
++openphone_assistant_data                 u:object_r:openphone_assistant_data_service:s0
+ openphone_context                        u:object_r:openphone_context_service:s0
+ ot_daemon                                 u:object_r:ot_daemon_service:s0
+ overlay                                   u:object_r:overlay_service:s0
+-- 
+2.43.0
+

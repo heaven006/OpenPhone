@@ -1,64 +1,53 @@
 package org.openphone.assistant.memory;
 
-import android.content.ContentValues;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
-import android.database.sqlite.SQLiteOpenHelper;
+import android.openphone.OpenPhoneAssistantDataManager;
+import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-public final class MemoryStore extends SQLiteOpenHelper {
-    private static final String DB_NAME = "openphone_memory.db";
-    private static final int DB_VERSION = 2;
+/**
+ * Client of the OS-owned OpenPhone assistant data service (system_server
+ * openphone_assistant_data). The assistant no longer owns the durable memory
+ * store; a one-time migration moves rows from the legacy app-local SQLite
+ * database into the OS store, preserving ids.
+ */
+public final class MemoryStore {
+    private static final String TAG = "OpenPhoneMemoryStore";
+    private static final String LEGACY_DB_NAME = "openphone_memory.db";
+    private static final String PREFS_NAME = "openphone_assistant_data";
+    private static final String KEY_MIGRATED = "memory_os_store_migrated_v1";
+    private static final int MIGRATION_CHUNK = 100;
+
+    private static final Object sMigrationLock = new Object();
+
+    private final Context mContext;
+    private final OpenPhoneAssistantDataManager mManager;
 
     public MemoryStore(Context context) {
-        super(context, DB_NAME, null, DB_VERSION);
-    }
-
-    @Override
-    public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE memory ("
-                + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                + "type TEXT NOT NULL,"
-                + "subject TEXT,"
-                + "text TEXT NOT NULL,"
-                + "normalized_text TEXT NOT NULL UNIQUE,"
-                + "confidence REAL NOT NULL,"
-                + "status TEXT NOT NULL,"
-                + "evidence_json TEXT,"
-                + "created_at INTEGER NOT NULL,"
-                + "updated_at INTEGER NOT NULL,"
-                + "last_used_at INTEGER,"
-                + "deleted_at INTEGER"
-                + ")");
-        db.execSQL("CREATE VIRTUAL TABLE memory_fts USING fts4("
-                + "type, subject, text, content='memory')");
-        db.execSQL("CREATE TRIGGER memory_ai AFTER INSERT ON memory "
-                + "BEGIN INSERT INTO memory_fts(rowid, type, subject, text) "
-                + "VALUES (new.id, new.type, new.subject, new.text); END");
-        db.execSQL("CREATE TRIGGER memory_ad AFTER DELETE ON memory "
-                + "BEGIN DELETE FROM memory_fts WHERE rowid = old.id; END");
-        db.execSQL("CREATE TRIGGER memory_au AFTER UPDATE ON memory "
-                + "BEGIN DELETE FROM memory_fts WHERE rowid = old.id; "
-                + "INSERT INTO memory_fts(rowid, type, subject, text) "
-                + "VALUES (new.id, new.type, new.subject, new.text); END");
-        db.execSQL("CREATE INDEX memory_status_idx ON memory(status, updated_at)");
-        db.execSQL("CREATE INDEX memory_normalized_idx ON memory(normalized_text)");
-    }
-
-    @Override
-    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // Durable user data: migrations must be additive and stepwise, never DROP TABLE.
-        if (oldVersion < 2) {
-            db.execSQL("CREATE INDEX IF NOT EXISTS memory_normalized_idx "
-                    + "ON memory(normalized_text)");
+        mContext = context.getApplicationContext();
+        OpenPhoneAssistantDataManager manager = null;
+        try {
+            manager = mContext.getSystemService(OpenPhoneAssistantDataManager.class);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "OpenPhone assistant data service unavailable", e);
+        }
+        mManager = manager;
+        try {
+            // Before user unlock CE storage is unavailable; retry on next use.
+            migrateLegacyStoreIfNeeded();
+        } catch (RuntimeException e) {
+            Log.w(TAG, "memory migration deferred", e);
         }
     }
 
@@ -69,76 +58,71 @@ public final class MemoryStore extends SQLiteOpenHelper {
     public long saveMemory(String type, String subject, String text, float confidence,
             String evidenceJson) {
         String cleanText = text == null ? "" : text.trim();
-        if (cleanText.isEmpty()) {
+        if (cleanText.isEmpty() || mManager == null) {
             return -1L;
         }
-        long now = System.currentTimeMillis();
-        String normalized = normalize(cleanText);
-        SQLiteDatabase db = getWritableDatabase();
-        ContentValues values = new ContentValues();
-        values.put("type", safe(type, "fact"));
-        values.put("subject", safe(subject, "user"));
-        values.put("text", cleanText);
-        values.put("normalized_text", normalized);
-        values.put("confidence", Math.max(0f, Math.min(confidence, 1f)));
-        values.put("status", "active");
-        values.put("evidence_json", evidenceJson == null || evidenceJson.isEmpty()
-                ? "{}" : evidenceJson);
-        values.put("created_at", now);
-        values.put("updated_at", now);
-        long id = db.insertWithOnConflict("memory", null, values, SQLiteDatabase.CONFLICT_IGNORE);
-        if (id >= 0) {
-            return id;
+        JSONObject request = new JSONObject();
+        try {
+            request.put("type", type == null ? "" : type)
+                    .put("subject", subject == null ? "" : subject)
+                    .put("text", cleanText)
+                    .put("confidence", Math.max(0f, Math.min(confidence, 1f)))
+                    .put("evidence_json", evidenceJson == null ? "" : evidenceJson);
+        } catch (JSONException e) {
+            return -1L;
         }
-        ContentValues update = new ContentValues();
-        update.put("type", safe(type, "fact"));
-        update.put("subject", safe(subject, "user"));
-        update.put("text", cleanText);
-        update.put("confidence", Math.max(0f, Math.min(confidence, 1f)));
-        update.put("status", "active");
-        update.put("evidence_json", evidenceJson == null || evidenceJson.isEmpty()
-                ? "{}" : evidenceJson);
-        update.put("updated_at", now);
-        db.update("memory", update, "normalized_text = ?", new String[]{normalized});
-        return idForNormalizedText(db, normalized);
+        try {
+            return parseOrEmpty(mManager.memorySave(request.toString())).optLong("id", -1L);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "memory save failed", e);
+            return -1L;
+        }
     }
 
     public List<MemoryRecord> search(String query, int limit) {
-        String cleanQuery = query == null ? "" : query.trim();
-        if (cleanQuery.isEmpty()) {
-            return latest(limit);
+        List<MemoryRecord> memories = new ArrayList<>();
+        if (mManager == null) {
+            return memories;
         }
         int boundedLimit = Math.max(1, Math.min(limit, 50));
-        SQLiteDatabase db = getReadableDatabase();
-        List<MemoryRecord> memories = new ArrayList<>();
-        String ftsQuery = cleanQuery.replace('"', ' ').trim();
-        try (Cursor cursor = db.rawQuery("SELECT m.id, m.type, m.subject, m.text, "
-                + "m.confidence, m.created_at, m.updated_at, m.evidence_json "
-                + "FROM memory_fts f JOIN memory m ON m.id = f.rowid "
-                + "WHERE memory_fts MATCH ? AND m.status = 'active' AND m.deleted_at IS NULL "
-                + "ORDER BY m.updated_at DESC LIMIT ?",
-                new String[]{ftsQuery, Integer.toString(boundedLimit)})) {
-            readMemories(cursor, memories);
-        } catch (RuntimeException e) {
-            return latest(boundedLimit);
+        JSONObject request = new JSONObject();
+        try {
+            request.put("query", query == null ? "" : query.trim())
+                    .put("limit", boundedLimit);
+        } catch (JSONException e) {
+            return memories;
         }
-        touch(memories);
+        JSONObject response;
+        try {
+            response = parseOrEmpty(mManager.memoryQuery(request.toString()));
+        } catch (RuntimeException e) {
+            Log.w(TAG, "memory query failed", e);
+            return memories;
+        }
+        JSONArray array = response.optJSONArray("memories");
+        if (array == null) {
+            return memories;
+        }
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject memory = array.optJSONObject(i);
+            if (memory == null) {
+                continue;
+            }
+            memories.add(new MemoryRecord(
+                    memory.optLong("id"),
+                    memory.optString("type", ""),
+                    memory.optString("subject", ""),
+                    memory.optString("text", ""),
+                    (float) memory.optDouble("confidence", 1.0),
+                    memory.optLong("created_at"),
+                    memory.optLong("updated_at"),
+                    memory.optString("evidence_json", "{}")));
+        }
         return memories;
     }
 
     public List<MemoryRecord> latest(int limit) {
-        int boundedLimit = Math.max(1, Math.min(limit, 50));
-        SQLiteDatabase db = getReadableDatabase();
-        List<MemoryRecord> memories = new ArrayList<>();
-        try (Cursor cursor = db.rawQuery("SELECT id, type, subject, text, confidence, "
-                + "created_at, updated_at, evidence_json FROM memory "
-                + "WHERE status = 'active' AND deleted_at IS NULL "
-                + "ORDER BY updated_at DESC LIMIT ?",
-                new String[]{Integer.toString(boundedLimit)})) {
-            readMemories(cursor, memories);
-        }
-        touch(memories);
-        return memories;
+        return search("", limit);
     }
 
     public String searchJson(String query, int limit) {
@@ -153,16 +137,85 @@ public final class MemoryStore extends SQLiteOpenHelper {
         }
     }
 
-    private void touch(List<MemoryRecord> memories) {
-        if (memories.isEmpty()) {
+    /**
+     * One-time move of the legacy assistant-local memory database into the
+     * OS-owned store. Rows keep their ids; the prefs flag is only set after a
+     * fully successful copy, so a crash mid-migration retries on next start.
+     */
+    private void migrateLegacyStoreIfNeeded() {
+        if (mManager == null) {
             return;
         }
-        long now = System.currentTimeMillis();
-        SQLiteDatabase db = getWritableDatabase();
-        ContentValues values = new ContentValues();
-        values.put("last_used_at", now);
-        for (MemoryRecord memory : memories) {
-            db.update("memory", values, "id = ?", new String[]{Long.toString(memory.id)});
+        synchronized (sMigrationLock) {
+            SharedPreferences prefs = mContext.getSharedPreferences(PREFS_NAME,
+                    Context.MODE_PRIVATE);
+            if (prefs.getBoolean(KEY_MIGRATED, false)) {
+                return;
+            }
+            File legacyDb = mContext.getDatabasePath(LEGACY_DB_NAME);
+            if (!legacyDb.exists()) {
+                prefs.edit().putBoolean(KEY_MIGRATED, true).apply();
+                return;
+            }
+            int migrated = 0;
+            try (SQLiteDatabase db = SQLiteDatabase.openDatabase(legacyDb.getAbsolutePath(),
+                    null, SQLiteDatabase.OPEN_READONLY)) {
+                long lastId = 0;
+                while (true) {
+                    JSONArray chunk = new JSONArray();
+                    try (Cursor cursor = db.rawQuery("SELECT id, type, subject, text, "
+                            + "normalized_text, confidence, status, evidence_json, "
+                            + "created_at, updated_at, last_used_at "
+                            + "FROM memory WHERE deleted_at IS NULL AND id > ? "
+                            + "ORDER BY id ASC LIMIT ?",
+                            new String[]{Long.toString(lastId),
+                                    Integer.toString(MIGRATION_CHUNK)})) {
+                        while (cursor.moveToNext()) {
+                            lastId = cursor.getLong(0);
+                            JSONObject row = new JSONObject();
+                            try {
+                                row.put("id", cursor.getLong(0))
+                                        .put("type", cursor.getString(1))
+                                        .put("subject", cursor.getString(2))
+                                        .put("text", cursor.getString(3))
+                                        .put("normalized_text", cursor.getString(4))
+                                        .put("confidence", cursor.getDouble(5))
+                                        .put("status", cursor.getString(6))
+                                        .put("evidence_json", cursor.getString(7))
+                                        .put("created_at", cursor.getLong(8))
+                                        .put("updated_at", cursor.getLong(9));
+                                if (cursor.isNull(10)) {
+                                    row.put("last_used_at", JSONObject.NULL);
+                                } else {
+                                    row.put("last_used_at", cursor.getLong(10));
+                                }
+                            } catch (JSONException e) {
+                                continue;
+                            }
+                            chunk.put(row);
+                        }
+                    }
+                    if (chunk.length() == 0) {
+                        break;
+                    }
+                    JSONObject result = parseOrEmpty(
+                            mManager.migrateRows("memory", chunk.toString()));
+                    if (result.has("error")) {
+                        Log.w(TAG, "Legacy memory migration failed: "
+                                + result.optString("error"));
+                        return;
+                    }
+                    migrated += result.optInt("inserted", 0);
+                }
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Legacy memory migration failed", e);
+                return;
+            }
+            prefs.edit()
+                    .putBoolean(KEY_MIGRATED, true)
+                    .putInt(KEY_MIGRATED + "_count", migrated)
+                    .apply();
+            Log.i(TAG, "Migrated " + migrated + " legacy memories into the OS store");
         }
     }
 
@@ -176,27 +229,6 @@ public final class MemoryStore extends SQLiteOpenHelper {
             return "standing_instruction";
         }
         return "fact";
-    }
-
-    private static long idForNormalizedText(SQLiteDatabase db, String normalized) {
-        try (Cursor cursor = db.rawQuery("SELECT id FROM memory WHERE normalized_text = ?",
-                new String[]{normalized})) {
-            return cursor.moveToFirst() ? cursor.getLong(0) : -1L;
-        }
-    }
-
-    private static void readMemories(Cursor cursor, List<MemoryRecord> memories) {
-        while (cursor.moveToNext()) {
-            memories.add(new MemoryRecord(
-                    cursor.getLong(0),
-                    cursor.getString(1),
-                    cursor.getString(2),
-                    cursor.getString(3),
-                    cursor.getFloat(4),
-                    cursor.getLong(5),
-                    cursor.getLong(6),
-                    cursor.getString(7)));
-        }
     }
 
     private static JSONObject memoryJson(MemoryRecord memory) {
@@ -221,17 +253,5 @@ public final class MemoryStore extends SQLiteOpenHelper {
         } catch (JSONException e) {
             return new JSONObject();
         }
-    }
-
-    private static String normalize(String text) {
-        String normalized = text == null ? "" : text.trim().toLowerCase(Locale.US);
-        while (normalized.contains("  ")) {
-            normalized = normalized.replace("  ", " ");
-        }
-        return normalized;
-    }
-
-    private static String safe(String value, String fallback) {
-        return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 }

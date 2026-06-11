@@ -1,69 +1,53 @@
 package org.openphone.assistant.commitments;
 
-import android.content.ContentValues;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
-import android.database.sqlite.SQLiteOpenHelper;
+import android.openphone.OpenPhoneAssistantDataManager;
+import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
-public final class CommitmentStore extends SQLiteOpenHelper {
-    private static final String DB_NAME = "openphone_commitments.db";
-    private static final int DB_VERSION = 2;
+/**
+ * Client of the OS-owned OpenPhone assistant data service (system_server
+ * openphone_assistant_data). The assistant no longer owns the durable
+ * commitment store; a one-time migration moves rows from the legacy app-local
+ * SQLite database into the OS store, preserving ids (alarms and notifications
+ * reference them).
+ */
+public final class CommitmentStore {
+    private static final String TAG = "OpenPhoneCommitments";
+    private static final String LEGACY_DB_NAME = "openphone_commitments.db";
+    private static final String PREFS_NAME = "openphone_assistant_data";
+    private static final String KEY_MIGRATED = "commitment_os_store_migrated_v1";
+    private static final int MIGRATION_CHUNK = 100;
+
+    private static final Object sMigrationLock = new Object();
+
+    private final Context mContext;
+    private final OpenPhoneAssistantDataManager mManager;
 
     public CommitmentStore(Context context) {
-        super(context, DB_NAME, null, DB_VERSION);
-    }
-
-    @Override
-    public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE commitment ("
-                + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                + "title TEXT NOT NULL,"
-                + "description TEXT,"
-                + "normalized_title TEXT NOT NULL,"
-                + "trigger_type TEXT NOT NULL,"
-                + "trigger_spec_json TEXT,"
-                + "due_at INTEGER,"
-                + "expires_at INTEGER,"
-                + "status TEXT NOT NULL,"
-                + "confidence REAL NOT NULL,"
-                + "evidence_json TEXT,"
-                + "created_at INTEGER NOT NULL,"
-                + "updated_at INTEGER NOT NULL,"
-                + "last_checked_at INTEGER,"
-                + "failure_count INTEGER NOT NULL DEFAULT 0,"
-                + "deleted_at INTEGER"
-                + ")");
-        db.execSQL("CREATE VIRTUAL TABLE commitment_fts USING fts4("
-                + "title, description, trigger_type, content='commitment')");
-        db.execSQL("CREATE TRIGGER commitment_ai AFTER INSERT ON commitment "
-                + "BEGIN INSERT INTO commitment_fts(rowid, title, description, trigger_type) "
-                + "VALUES (new.id, new.title, new.description, new.trigger_type); END");
-        db.execSQL("CREATE TRIGGER commitment_ad AFTER DELETE ON commitment "
-                + "BEGIN DELETE FROM commitment_fts WHERE rowid = old.id; END");
-        db.execSQL("CREATE TRIGGER commitment_au AFTER UPDATE ON commitment "
-                + "BEGIN DELETE FROM commitment_fts WHERE rowid = old.id; "
-                + "INSERT INTO commitment_fts(rowid, title, description, trigger_type) "
-                + "VALUES (new.id, new.title, new.description, new.trigger_type); END");
-        db.execSQL("CREATE INDEX commitment_status_idx ON commitment(status, due_at)");
-        db.execSQL("CREATE INDEX commitment_title_idx ON commitment(normalized_title)");
-        db.execSQL("CREATE INDEX commitment_updated_idx ON commitment(deleted_at, updated_at)");
-    }
-
-    @Override
-    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // Durable user data: migrations must be additive and stepwise, never DROP TABLE.
-        if (oldVersion < 2) {
-            db.execSQL("CREATE INDEX IF NOT EXISTS commitment_updated_idx "
-                    + "ON commitment(deleted_at, updated_at)");
+        mContext = context.getApplicationContext();
+        OpenPhoneAssistantDataManager manager = null;
+        try {
+            manager = mContext.getSystemService(OpenPhoneAssistantDataManager.class);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "OpenPhone assistant data service unavailable", e);
+        }
+        mManager = manager;
+        try {
+            // Before user unlock CE storage is unavailable; retry on next use.
+            migrateLegacyStoreIfNeeded();
+        } catch (RuntimeException e) {
+            Log.w(TAG, "commitment migration deferred", e);
         }
     }
 
@@ -84,104 +68,108 @@ public final class CommitmentStore extends SQLiteOpenHelper {
             String triggerSpecJson, long dueAtMillis, long expiresAtMillis, float confidence,
             String evidenceJson) {
         String cleanTitle = title == null ? "" : title.trim();
-        if (cleanTitle.isEmpty()) {
+        if (cleanTitle.isEmpty() || mManager == null) {
             return -1L;
         }
-        long now = System.currentTimeMillis();
-        ContentValues values = new ContentValues();
-        values.put("title", cleanTitle);
-        values.put("description", description == null ? "" : description.trim());
-        values.put("normalized_title", normalize(cleanTitle));
-        values.put("trigger_type", safe(triggerType, "manual"));
-        values.put("trigger_spec_json", triggerSpecJson == null || triggerSpecJson.isEmpty()
-                ? "{}" : triggerSpecJson);
-        values.put("due_at", dueAtMillis);
-        values.put("expires_at", expiresAtMillis);
-        values.put("status", "pending");
-        values.put("confidence", Math.max(0f, Math.min(confidence, 1f)));
-        values.put("evidence_json", evidenceJson == null || evidenceJson.isEmpty()
-                ? "{}" : evidenceJson);
-        values.put("created_at", now);
-        values.put("updated_at", now);
-        return getWritableDatabase().insert("commitment", null, values);
+        JSONObject request = new JSONObject();
+        try {
+            request.put("title", cleanTitle)
+                    .put("description", description == null ? "" : description)
+                    .put("trigger_type", triggerType == null ? "" : triggerType)
+                    .put("trigger_spec_json", triggerSpecJson == null ? "" : triggerSpecJson)
+                    .put("due_at", dueAtMillis)
+                    .put("expires_at", expiresAtMillis)
+                    .put("confidence", Math.max(0f, Math.min(confidence, 1f)))
+                    .put("evidence_json", evidenceJson == null ? "" : evidenceJson);
+        } catch (JSONException e) {
+            return -1L;
+        }
+        try {
+            return parseOrEmpty(mManager.commitmentCreate(request.toString()))
+                    .optLong("id", -1L);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "commitment create failed", e);
+            return -1L;
+        }
     }
 
     public boolean updateStatus(long id, String status) {
         if (id <= 0 || status == null || status.trim().isEmpty()) {
             return false;
         }
-        ContentValues values = new ContentValues();
-        values.put("status", status.trim());
-        values.put("updated_at", System.currentTimeMillis());
-        return getWritableDatabase().update("commitment", values, "id = ?",
-                new String[]{Long.toString(id)}) > 0;
+        JSONObject request = new JSONObject();
+        try {
+            request.put("id", id).put("action", "status").put("status", status.trim());
+        } catch (JSONException e) {
+            return false;
+        }
+        return update(request);
     }
 
     public boolean snooze(long id, long dueAtMillis) {
         if (id <= 0 || dueAtMillis <= 0) {
             return false;
         }
-        ContentValues values = new ContentValues();
-        values.put("status", "snoozed");
-        values.put("due_at", dueAtMillis);
-        values.put("updated_at", System.currentTimeMillis());
-        return getWritableDatabase().update("commitment", values, "id = ?",
-                new String[]{Long.toString(id)}) > 0;
+        JSONObject request = new JSONObject();
+        try {
+            request.put("id", id).put("action", "snooze").put("due_at", dueAtMillis);
+        } catch (JSONException e) {
+            return false;
+        }
+        return update(request);
     }
 
     public boolean dismiss(long id) {
         if (id <= 0) {
             return false;
         }
-        ContentValues values = new ContentValues();
-        long now = System.currentTimeMillis();
-        values.put("status", "dismissed");
-        values.put("updated_at", now);
-        values.put("deleted_at", now);
-        return getWritableDatabase().update("commitment", values, "id = ?",
-                new String[]{Long.toString(id)}) > 0;
+        JSONObject request = new JSONObject();
+        try {
+            request.put("id", id).put("action", "dismiss");
+        } catch (JSONException e) {
+            return false;
+        }
+        return update(request);
     }
 
     public List<CommitmentRecord> due(long nowMillis, int limit) {
-        int boundedLimit = Math.max(1, Math.min(limit, 50));
-        List<CommitmentRecord> commitments = new ArrayList<>();
-        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT id, title, description, "
-                + "trigger_type, trigger_spec_json, due_at, expires_at, status, confidence, "
-                + "evidence_json, created_at, updated_at FROM commitment "
-                + "WHERE status IN ('pending','active','snoozed') "
-                + "AND deleted_at IS NULL AND due_at > 0 AND due_at <= ? "
-                + "ORDER BY due_at ASC LIMIT ?",
-                new String[]{Long.toString(nowMillis), Integer.toString(boundedLimit)})) {
-            readCommitments(cursor, commitments);
+        JSONObject request = new JSONObject();
+        try {
+            request.put("mode", "due").put("now", nowMillis)
+                    .put("limit", Math.max(1, Math.min(limit, 50)));
+        } catch (JSONException e) {
+            return new ArrayList<>();
         }
-        return commitments;
+        return queryCommitments(request);
     }
 
     public long nextDueAt(long nowMillis) {
-        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT due_at FROM commitment "
-                + "WHERE status IN ('pending','active','snoozed') "
-                + "AND deleted_at IS NULL AND due_at > ? ORDER BY due_at ASC LIMIT 1",
-                new String[]{Long.toString(nowMillis)})) {
-            if (cursor.moveToFirst()) {
-                return cursor.getLong(0);
-            }
+        if (mManager == null) {
+            return 0L;
         }
-        return 0L;
+        JSONObject request = new JSONObject();
+        try {
+            request.put("mode", "next_due_at").put("now", nowMillis);
+        } catch (JSONException e) {
+            return 0L;
+        }
+        try {
+            return parseOrEmpty(mManager.commitmentQuery(request.toString()))
+                    .optLong("next_due_at", 0L);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "commitment nextDueAt failed", e);
+            return 0L;
+        }
     }
 
     public List<CommitmentRecord> active(int limit) {
-        int boundedLimit = Math.max(1, Math.min(limit, 50));
-        List<CommitmentRecord> commitments = new ArrayList<>();
-        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT id, title, description, "
-                + "trigger_type, trigger_spec_json, due_at, expires_at, status, confidence, "
-                + "evidence_json, created_at, updated_at FROM commitment "
-                + "WHERE status IN ('pending','active','snoozed') AND deleted_at IS NULL "
-                + "ORDER BY CASE WHEN due_at > 0 THEN due_at ELSE 9223372036854775807 END ASC, "
-                + "updated_at DESC LIMIT ?",
-                new String[]{Integer.toString(boundedLimit)})) {
-            readCommitments(cursor, commitments);
+        JSONObject request = new JSONObject();
+        try {
+            request.put("mode", "active").put("limit", Math.max(1, Math.min(limit, 50)));
+        } catch (JSONException e) {
+            return new ArrayList<>();
         }
-        return commitments;
+        return queryCommitments(request);
     }
 
     public List<CommitmentRecord> search(String query, int limit) {
@@ -189,21 +177,14 @@ public final class CommitmentStore extends SQLiteOpenHelper {
         if (cleanQuery.isEmpty()) {
             return active(limit);
         }
-        int boundedLimit = Math.max(1, Math.min(limit, 50));
-        List<CommitmentRecord> commitments = new ArrayList<>();
-        String ftsQuery = cleanQuery.replace('"', ' ').trim();
-        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT c.id, c.title, "
-                + "c.description, c.trigger_type, c.trigger_spec_json, c.due_at, "
-                + "c.expires_at, c.status, c.confidence, c.evidence_json, c.created_at, "
-                + "c.updated_at FROM commitment_fts f JOIN commitment c ON c.id = f.rowid "
-                + "WHERE commitment_fts MATCH ? AND c.deleted_at IS NULL "
-                + "ORDER BY c.updated_at DESC LIMIT ?",
-                new String[]{ftsQuery, Integer.toString(boundedLimit)})) {
-            readCommitments(cursor, commitments);
-        } catch (RuntimeException e) {
-            return active(boundedLimit);
+        JSONObject request = new JSONObject();
+        try {
+            request.put("mode", "search").put("query", cleanQuery)
+                    .put("limit", Math.max(1, Math.min(limit, 50)));
+        } catch (JSONException e) {
+            return new ArrayList<>();
         }
-        return commitments;
+        return queryCommitments(request);
     }
 
     public String searchJson(String query, int limit) {
@@ -218,21 +199,141 @@ public final class CommitmentStore extends SQLiteOpenHelper {
         }
     }
 
-    private static void readCommitments(Cursor cursor, List<CommitmentRecord> commitments) {
-        while (cursor.moveToNext()) {
+    private boolean update(JSONObject request) {
+        if (mManager == null) {
+            return false;
+        }
+        try {
+            return parseOrEmpty(mManager.commitmentUpdate(request.toString()))
+                    .optBoolean("updated", false);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "commitment update failed", e);
+            return false;
+        }
+    }
+
+    private List<CommitmentRecord> queryCommitments(JSONObject request) {
+        List<CommitmentRecord> commitments = new ArrayList<>();
+        if (mManager == null) {
+            return commitments;
+        }
+        JSONObject response;
+        try {
+            response = parseOrEmpty(mManager.commitmentQuery(request.toString()));
+        } catch (RuntimeException e) {
+            Log.w(TAG, "commitment query failed", e);
+            return commitments;
+        }
+        JSONArray array = response.optJSONArray("commitments");
+        if (array == null) {
+            return commitments;
+        }
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject commitment = array.optJSONObject(i);
+            if (commitment == null) {
+                continue;
+            }
             commitments.add(new CommitmentRecord(
-                    cursor.getLong(0),
-                    cursor.getString(1),
-                    cursor.getString(2),
-                    cursor.getString(3),
-                    cursor.getString(4),
-                    cursor.getLong(5),
-                    cursor.getLong(6),
-                    cursor.getString(7),
-                    cursor.getFloat(8),
-                    cursor.getString(9),
-                    cursor.getLong(10),
-                    cursor.getLong(11)));
+                    commitment.optLong("id"),
+                    commitment.optString("title", ""),
+                    commitment.optString("description", ""),
+                    commitment.optString("trigger_type", ""),
+                    commitment.optString("trigger_spec_json", "{}"),
+                    commitment.optLong("due_at"),
+                    commitment.optLong("expires_at"),
+                    commitment.optString("status", ""),
+                    (float) commitment.optDouble("confidence", 1.0),
+                    commitment.optString("evidence_json", "{}"),
+                    commitment.optLong("created_at"),
+                    commitment.optLong("updated_at")));
+        }
+        return commitments;
+    }
+
+    /**
+     * One-time move of the legacy assistant-local commitment database into the
+     * OS-owned store. Rows keep their ids; the prefs flag is only set after a
+     * fully successful copy, so a crash mid-migration retries on next start.
+     */
+    private void migrateLegacyStoreIfNeeded() {
+        if (mManager == null) {
+            return;
+        }
+        synchronized (sMigrationLock) {
+            SharedPreferences prefs = mContext.getSharedPreferences(PREFS_NAME,
+                    Context.MODE_PRIVATE);
+            if (prefs.getBoolean(KEY_MIGRATED, false)) {
+                return;
+            }
+            File legacyDb = mContext.getDatabasePath(LEGACY_DB_NAME);
+            if (!legacyDb.exists()) {
+                prefs.edit().putBoolean(KEY_MIGRATED, true).apply();
+                return;
+            }
+            int migrated = 0;
+            try (SQLiteDatabase db = SQLiteDatabase.openDatabase(legacyDb.getAbsolutePath(),
+                    null, SQLiteDatabase.OPEN_READONLY)) {
+                long lastId = 0;
+                while (true) {
+                    JSONArray chunk = new JSONArray();
+                    try (Cursor cursor = db.rawQuery("SELECT id, title, description, "
+                            + "normalized_title, trigger_type, trigger_spec_json, due_at, "
+                            + "expires_at, status, confidence, evidence_json, created_at, "
+                            + "updated_at, last_checked_at, failure_count "
+                            + "FROM commitment WHERE deleted_at IS NULL AND id > ? "
+                            + "ORDER BY id ASC LIMIT ?",
+                            new String[]{Long.toString(lastId),
+                                    Integer.toString(MIGRATION_CHUNK)})) {
+                        while (cursor.moveToNext()) {
+                            lastId = cursor.getLong(0);
+                            JSONObject row = new JSONObject();
+                            try {
+                                row.put("id", cursor.getLong(0))
+                                        .put("title", cursor.getString(1))
+                                        .put("description", cursor.getString(2))
+                                        .put("normalized_title", cursor.getString(3))
+                                        .put("trigger_type", cursor.getString(4))
+                                        .put("trigger_spec_json", cursor.getString(5))
+                                        .put("due_at", cursor.getLong(6))
+                                        .put("expires_at", cursor.getLong(7))
+                                        .put("status", cursor.getString(8))
+                                        .put("confidence", cursor.getDouble(9))
+                                        .put("evidence_json", cursor.getString(10))
+                                        .put("created_at", cursor.getLong(11))
+                                        .put("updated_at", cursor.getLong(12))
+                                        .put("failure_count", cursor.getLong(14));
+                                if (cursor.isNull(13)) {
+                                    row.put("last_checked_at", JSONObject.NULL);
+                                } else {
+                                    row.put("last_checked_at", cursor.getLong(13));
+                                }
+                            } catch (JSONException e) {
+                                continue;
+                            }
+                            chunk.put(row);
+                        }
+                    }
+                    if (chunk.length() == 0) {
+                        break;
+                    }
+                    JSONObject result = parseOrEmpty(
+                            mManager.migrateRows("commitment", chunk.toString()));
+                    if (result.has("error")) {
+                        Log.w(TAG, "Legacy commitment migration failed: "
+                                + result.optString("error"));
+                        return;
+                    }
+                    migrated += result.optInt("inserted", 0);
+                }
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Legacy commitment migration failed", e);
+                return;
+            }
+            prefs.edit()
+                    .putBoolean(KEY_MIGRATED, true)
+                    .putInt(KEY_MIGRATED + "_count", migrated)
+                    .apply();
+            Log.i(TAG, "Migrated " + migrated + " legacy commitments into the OS store");
         }
     }
 
@@ -262,17 +363,5 @@ public final class CommitmentStore extends SQLiteOpenHelper {
         } catch (JSONException e) {
             return new JSONObject();
         }
-    }
-
-    private static String normalize(String text) {
-        String normalized = text == null ? "" : text.trim().toLowerCase(Locale.US);
-        while (normalized.contains("  ")) {
-            normalized = normalized.replace("  ", " ");
-        }
-        return normalized;
-    }
-
-    private static String safe(String value, String fallback) {
-        return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 }

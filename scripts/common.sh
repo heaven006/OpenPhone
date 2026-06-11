@@ -93,7 +93,7 @@ file_sha256() {
 }
 
 ensure_tegu_dtb() {
-  local kernel_dir prebuilt_image target_dtb unpack_tool tmp actual
+  local kernel_dir prebuilt_image target_dtb unpack_tool tmp actual stray
   kernel_dir="$(tegu_kernel_dir)"
   prebuilt_image="$kernel_dir/vendor_kernel_boot.img"
   target_dtb="$kernel_dir/tegu.dtb"
@@ -101,6 +101,17 @@ ensure_tegu_dtb() {
 
   [[ -f "$prebuilt_image" ]] || die "missing Pixel 9a prebuilt vendor_kernel_boot image: $prebuilt_image"
   [[ -x "$unpack_tool" ]] || die "missing unpack_bootimg tool: $unpack_tool"
+
+  # The vendor_kernel_boot rule concatenates EVERY *.dtb in this directory, so
+  # stray per-SoC DTBs (zumapro-*.dtb, dropped by kernel prebuilt updates)
+  # double the image and fail the pinned-hash verification at the very end of
+  # the build. Remove anything that is not the pinned tegu.dtb.
+  for stray in "$kernel_dir"/*.dtb; do
+    [[ -e "$stray" ]] || continue
+    [[ "$stray" == "$target_dtb" ]] && continue
+    info "Removing stray DTB (would corrupt vendor_kernel_boot): $stray"
+    rm -f "$stray"
+  done
 
   if [[ -f "$target_dtb" ]]; then
     actual="$(file_sha256 "$target_dtb")"

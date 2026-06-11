@@ -1,0 +1,1309 @@
+From f67c3ccf752a94081727384f7a1735b6b67c7e85 Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Thu, 11 Jun 2026 06:44:45 +0000
+Subject: [PATCH] OpenPhone: add OS-owned assistant data service
+
+Change-Id: I5a7b9c1d3e5f70819a2b3c4d5e6f708192a3b4c5
+---
+ .../android/app/SystemServiceRegistry.java    |   14 +
+ core/java/android/content/Context.java        |   10 +
+ .../IOpenPhoneAssistantDataService.aidl       |   23 +
+ .../OpenPhoneAssistantDataManager.java        |  130 +++
+ core/res/AndroidManifest.xml                  |    4 +
+ .../OpenPhoneAssistantDataService.java        | 1024 +++++++++++++++++
+ .../java/com/android/server/SystemServer.java |    5 +
+ 7 files changed, 1210 insertions(+)
+ create mode 100644 core/java/android/openphone/IOpenPhoneAssistantDataService.aidl
+ create mode 100644 core/java/android/openphone/OpenPhoneAssistantDataManager.java
+ create mode 100644 services/core/java/com/android/server/openphone/OpenPhoneAssistantDataService.java
+
+diff --git a/core/java/android/app/SystemServiceRegistry.java b/core/java/android/app/SystemServiceRegistry.java
+index 7e7b23a4e2f5..e296c786de29 100644
+--- a/core/java/android/app/SystemServiceRegistry.java
++++ b/core/java/android/app/SystemServiceRegistry.java
+@@ -186,7 +186,9 @@ import android.nfc.NfcFrameworkInitializer;
+ import android.ondevicepersonalization.OnDevicePersonalizationFrameworkInitializer;
+ import android.openphone.IOpenPhoneAgentService;
+ import android.openphone.OpenPhoneAgentManager;
++import android.openphone.IOpenPhoneAssistantDataService;
+ import android.openphone.IOpenPhoneContextIndexService;
++import android.openphone.OpenPhoneAssistantDataManager;
+ import android.openphone.OpenPhoneContextManager;
+ import android.os.AnomalyDetectorFrameworkInitializer;
+ import android.os.BatteryManager;
+@@ -421,6 +423,18 @@ public final class SystemServiceRegistry {
+                         IOpenPhoneContextIndexService.Stub.asInterface(b));
+             }});
+ 
++        registerService(Context.OPENPHONE_ASSISTANT_DATA_SERVICE,
++                OpenPhoneAssistantDataManager.class,
++                new CachedServiceFetcher<OpenPhoneAssistantDataManager>() {
++            @Override
++            public OpenPhoneAssistantDataManager createService(ContextImpl ctx)
++                    throws ServiceNotFoundException {
++                IBinder b = ServiceManager.getServiceOrThrow(
++                        Context.OPENPHONE_ASSISTANT_DATA_SERVICE);
++                return new OpenPhoneAssistantDataManager(
++                        IOpenPhoneAssistantDataService.Stub.asInterface(b));
++            }});
++
+         registerService(Context.URI_GRANTS_SERVICE, UriGrantsManager.class,
+                 new CachedServiceFetcher<UriGrantsManager>() {
+             @Override
+diff --git a/core/java/android/content/Context.java b/core/java/android/content/Context.java
+index 660949e006c2..63f27a24b52d 100644
+--- a/core/java/android/content/Context.java
++++ b/core/java/android/content/Context.java
+@@ -5020,6 +5020,16 @@ public abstract class Context {
+      */
+     public static final String OPENPHONE_CONTEXT_SERVICE = "openphone_context";
+ 
++    /**
++     * Use with {@link #getSystemService(String)} to retrieve an
++     * {@link android.openphone.OpenPhoneAssistantDataManager} for the OS-owned
++     * OpenPhone assistant data store (memories, commitments, watchers).
++     *
++     * @hide
++     */
++    public static final String OPENPHONE_ASSISTANT_DATA_SERVICE =
++            "openphone_assistant_data";
++
+     /**
+      * Use with {@link #getSystemService(String)} to retrieve a
+      * {@link android.app.UriGrantsManager} for interacting with the global system state.
+diff --git a/core/java/android/openphone/IOpenPhoneAssistantDataService.aidl b/core/java/android/openphone/IOpenPhoneAssistantDataService.aidl
+new file mode 100644
+index 000000000000..57bf7cc9cadc
+--- /dev/null
++++ b/core/java/android/openphone/IOpenPhoneAssistantDataService.aidl
+@@ -0,0 +1,23 @@
++/*
++ * Copyright 2026 OpenPhone contributors.
++ *
++ * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
++ *
++ * Commercial use requires a separate written license.
++ */
++
++package android.openphone;
++
++/** @hide */
++interface IOpenPhoneAssistantDataService {
++    String getServiceStatus();
++    String memorySave(String requestJson);
++    String memoryQuery(String requestJson);
++    String commitmentCreate(String requestJson);
++    String commitmentUpdate(String requestJson);
++    String commitmentQuery(String requestJson);
++    String watcherCreate(String requestJson);
++    String watcherUpdate(String requestJson);
++    String watcherQuery(String requestJson);
++    String migrateRows(String store, String rowsJsonArray);
++}
+diff --git a/core/java/android/openphone/OpenPhoneAssistantDataManager.java b/core/java/android/openphone/OpenPhoneAssistantDataManager.java
+new file mode 100644
+index 000000000000..84af1a201152
+--- /dev/null
++++ b/core/java/android/openphone/OpenPhoneAssistantDataManager.java
+@@ -0,0 +1,130 @@
++/*
++ * Copyright 2026 OpenPhone contributors.
++ *
++ * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
++ *
++ * Commercial use requires a separate written license.
++ */
++
++package android.openphone;
++
++import android.annotation.NonNull;
++import android.annotation.SystemService;
++import android.content.Context;
++import android.os.RemoteException;
++
++/**
++ * Client API for the OS-owned OpenPhone assistant data service
++ * (memories, commitments and watchers).
++ *
++ * @hide
++ */
++@SystemService(Context.OPENPHONE_ASSISTANT_DATA_SERVICE)
++public final class OpenPhoneAssistantDataManager {
++    private final IOpenPhoneAssistantDataService mService;
++
++    /** @hide */
++    public OpenPhoneAssistantDataManager(@NonNull IOpenPhoneAssistantDataService service) {
++        mService = service;
++    }
++
++    /** @hide */
++    @NonNull
++    public String getServiceStatus() {
++        try {
++            return mService.getServiceStatus();
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String memorySave(@NonNull String requestJson) {
++        try {
++            return mService.memorySave(requestJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String memoryQuery(@NonNull String requestJson) {
++        try {
++            return mService.memoryQuery(requestJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String commitmentCreate(@NonNull String requestJson) {
++        try {
++            return mService.commitmentCreate(requestJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String commitmentUpdate(@NonNull String requestJson) {
++        try {
++            return mService.commitmentUpdate(requestJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String commitmentQuery(@NonNull String requestJson) {
++        try {
++            return mService.commitmentQuery(requestJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String watcherCreate(@NonNull String requestJson) {
++        try {
++            return mService.watcherCreate(requestJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String watcherUpdate(@NonNull String requestJson) {
++        try {
++            return mService.watcherUpdate(requestJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String watcherQuery(@NonNull String requestJson) {
++        try {
++            return mService.watcherQuery(requestJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /** @hide */
++    @NonNull
++    public String migrateRows(@NonNull String store, @NonNull String rowsJsonArray) {
++        try {
++            return mService.migrateRows(store, rowsJsonArray);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++}
+diff --git a/core/res/AndroidManifest.xml b/core/res/AndroidManifest.xml
+index 3689ebe9c8f3..02db52bb4869 100644
+--- a/core/res/AndroidManifest.xml
++++ b/core/res/AndroidManifest.xml
+@@ -45,6 +45,10 @@
+     <permission
+         android:name="org.openphone.permission.USE_CONTEXT_INDEX"
+         android:protectionLevel="signature" />
++    <!-- @hide Allows OpenPhone system components to use the OS-owned assistant data store. -->
++    <permission
++        android:name="org.openphone.permission.USE_ASSISTANT_DATA"
++        android:protectionLevel="signature" />
+ 
+     <!-- ================================================ -->
+     <!-- Special broadcasts that only the system can send -->
+diff --git a/services/core/java/com/android/server/openphone/OpenPhoneAssistantDataService.java b/services/core/java/com/android/server/openphone/OpenPhoneAssistantDataService.java
+new file mode 100644
+index 000000000000..0b99175f5b93
+--- /dev/null
++++ b/services/core/java/com/android/server/openphone/OpenPhoneAssistantDataService.java
+@@ -0,0 +1,1024 @@
++/*
++ * Copyright 2026 OpenPhone contributors.
++ *
++ * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
++ *
++ * Commercial use requires a separate written license.
++ */
++
++package com.android.server.openphone;
++
++import android.content.ContentValues;
++import android.content.Context;
++import android.database.Cursor;
++import android.database.sqlite.SQLiteDatabase;
++import android.openphone.IOpenPhoneAssistantDataService;
++import android.os.Binder;
++import android.os.Environment;
++import android.util.Slog;
++
++import com.android.server.SystemService;
++
++import org.json.JSONArray;
++import org.json.JSONException;
++import org.json.JSONObject;
++
++import java.io.File;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Locale;
++
++/**
++ * OS-owned durable store for the assistant's memories, commitments and
++ * watchers. Owns the canonical tables under /data/system/openphone/ so this
++ * user data survives assistant reinstalls and can later serve more than one
++ * client surface.
++ */
++public final class OpenPhoneAssistantDataService extends SystemService {
++    private static final String TAG = "OpenPhoneAssistantData";
++    private static final String PERMISSION_USE_ASSISTANT_DATA =
++            "org.openphone.permission.USE_ASSISTANT_DATA";
++    private static final String OPENPHONE_SYSTEM_DIR = "openphone";
++    private static final String DB_FILE = "assistant_data.db";
++    private static final int SCHEMA_VERSION = 1;
++    private static final int MAX_LIMIT = 100;
++
++    private final BinderService mBinderService;
++
++    public OpenPhoneAssistantDataService(Context context) {
++        super(context);
++        mBinderService = new BinderService(context);
++    }
++
++    @Override
++    public void onStart() {
++        publishBinderService(Context.OPENPHONE_ASSISTANT_DATA_SERVICE, mBinderService);
++        Slog.i(TAG, "OpenPhone assistant data service published");
++    }
++
++    private static final class BinderService extends IOpenPhoneAssistantDataService.Stub {
++        private final Context mContext;
++        private final Object mDbLock = new Object();
++        private SQLiteDatabase mDb;
++
++        BinderService(Context context) {
++            mContext = context;
++        }
++
++        @Override
++        public String getServiceStatus() {
++            enforcePermission();
++            long memories = -1L;
++            long commitments = -1L;
++            long watchers = -1L;
++            synchronized (mDbLock) {
++                try {
++                    final SQLiteDatabase db = openLocked();
++                    memories = countLocked(db, "memory");
++                    commitments = countLocked(db, "commitment");
++                    watchers = countLocked(db, "watcher");
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "status query failed", e);
++                }
++            }
++            final JSONObject json = new JSONObject();
++            try {
++                json.put("state", "ready");
++                json.put("service", Context.OPENPHONE_ASSISTANT_DATA_SERVICE);
++                json.put("schema_version", SCHEMA_VERSION);
++                json.put("memory_count", memories);
++                json.put("commitment_count", commitments);
++                json.put("watcher_count", watchers);
++                json.put("source", "system_server.openphone_assistant_data");
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++            return json.toString();
++        }
++
++        // ---------------------------------------------------------------
++        // Memory
++        // ---------------------------------------------------------------
++
++        @Override
++        public String memorySave(String requestJson) {
++            enforcePermission();
++            final JSONObject request = parseOrEmpty(requestJson);
++            final String text = request.optString("text", "").trim();
++            if (text.isEmpty()) {
++                return errorJson("missing_text");
++            }
++            final long now = System.currentTimeMillis();
++            final String normalized = normalize(text);
++            final ContentValues values = new ContentValues();
++            values.put("type", safe(request.optString("type", ""), "fact"));
++            values.put("subject", safe(request.optString("subject", ""), "user"));
++            values.put("text", text);
++            values.put("normalized_text", normalized);
++            values.put("confidence", clampConfidence(request.optDouble("confidence", 1.0)));
++            values.put("status", "active");
++            values.put("evidence_json", safeJson(request.optString("evidence_json", "")));
++            values.put("created_at", now);
++            values.put("updated_at", now);
++            values.put("source_uid", Binder.getCallingUid());
++            synchronized (mDbLock) {
++                try {
++                    final SQLiteDatabase db = openLocked();
++                    long id = db.insertWithOnConflict("memory", null, values,
++                            SQLiteDatabase.CONFLICT_IGNORE);
++                    if (id < 0) {
++                        final ContentValues update = new ContentValues(values);
++                        update.remove("normalized_text");
++                        update.remove("created_at");
++                        db.update("memory", update, "normalized_text = ?",
++                                new String[]{normalized});
++                        id = idForNormalizedTextLocked(db, normalized);
++                    }
++                    return idJson(id);
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "memorySave failed", e);
++                    return errorJson("save_failed");
++                }
++            }
++        }
++
++        @Override
++        public String memoryQuery(String requestJson) {
++            enforcePermission();
++            final JSONObject request = parseOrEmpty(requestJson);
++            final String query = request.optString("query", "").trim();
++            final int limit = boundLimit(request.optInt("limit", 20));
++            final JSONArray memories = new JSONArray();
++            synchronized (mDbLock) {
++                try {
++                    final SQLiteDatabase db = openLocked();
++                    boolean done = false;
++                    if (!query.isEmpty()) {
++                        final String ftsQuery = query.replace('"', ' ').trim();
++                        try (Cursor cursor = db.rawQuery("SELECT m.id, m.type, m.subject, "
++                                + "m.text, m.confidence, m.created_at, m.updated_at, "
++                                + "m.evidence_json "
++                                + "FROM memory_fts f JOIN memory m ON m.id = f.rowid "
++                                + "WHERE memory_fts MATCH ? AND m.status = 'active' "
++                                + "AND m.deleted_at IS NULL "
++                                + "ORDER BY m.updated_at DESC LIMIT ?",
++                                new String[]{ftsQuery, Integer.toString(limit)})) {
++                            readMemoriesLocked(cursor, memories);
++                            done = true;
++                        } catch (RuntimeException e) {
++                            // Malformed FTS query: fall through to the latest scan.
++                        }
++                    }
++                    if (!done) {
++                        try (Cursor cursor = db.rawQuery("SELECT id, type, subject, text, "
++                                + "confidence, created_at, updated_at, evidence_json "
++                                + "FROM memory WHERE status = 'active' AND deleted_at IS NULL "
++                                + "ORDER BY updated_at DESC LIMIT ?",
++                                new String[]{Integer.toString(limit)})) {
++                            readMemoriesLocked(cursor, memories);
++                        }
++                    }
++                    touchMemoriesLocked(db, memories);
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "memoryQuery failed", e);
++                    return errorJson("query_failed");
++                }
++            }
++            return wrapArray("memories", memories);
++        }
++
++        private static void readMemoriesLocked(Cursor cursor, JSONArray memories) {
++            while (cursor.moveToNext()) {
++                final JSONObject memory = new JSONObject();
++                try {
++                    memory.put("id", cursor.getLong(0));
++                    memory.put("type", cursor.getString(1));
++                    memory.put("subject", cursor.getString(2));
++                    memory.put("text", cursor.getString(3));
++                    memory.put("confidence", cursor.getFloat(4));
++                    memory.put("created_at", cursor.getLong(5));
++                    memory.put("updated_at", cursor.getLong(6));
++                    memory.put("evidence_json", cursor.getString(7));
++                } catch (JSONException e) {
++                    continue;
++                }
++                memories.put(memory);
++            }
++        }
++
++        private static void touchMemoriesLocked(SQLiteDatabase db, JSONArray memories) {
++            if (memories.length() == 0) {
++                return;
++            }
++            final ContentValues values = new ContentValues();
++            values.put("last_used_at", System.currentTimeMillis());
++            for (int i = 0; i < memories.length(); i++) {
++                final JSONObject memory = memories.optJSONObject(i);
++                if (memory == null) {
++                    continue;
++                }
++                db.update("memory", values, "id = ?",
++                        new String[]{Long.toString(memory.optLong("id"))});
++            }
++        }
++
++        private static long idForNormalizedTextLocked(SQLiteDatabase db, String normalized) {
++            try (Cursor cursor = db.rawQuery("SELECT id FROM memory WHERE normalized_text = ?",
++                    new String[]{normalized})) {
++                return cursor.moveToFirst() ? cursor.getLong(0) : -1L;
++            }
++        }
++
++        // ---------------------------------------------------------------
++        // Commitments
++        // ---------------------------------------------------------------
++
++        @Override
++        public String commitmentCreate(String requestJson) {
++            enforcePermission();
++            final JSONObject request = parseOrEmpty(requestJson);
++            final String title = request.optString("title", "").trim();
++            if (title.isEmpty()) {
++                return errorJson("missing_title");
++            }
++            final long now = System.currentTimeMillis();
++            final ContentValues values = new ContentValues();
++            values.put("title", title);
++            values.put("description", request.optString("description", "").trim());
++            values.put("normalized_title", normalize(title));
++            values.put("trigger_type", safe(request.optString("trigger_type", ""), "manual"));
++            values.put("trigger_spec_json", safeJson(request.optString("trigger_spec_json", "")));
++            values.put("due_at", request.optLong("due_at", 0L));
++            values.put("expires_at", request.optLong("expires_at", 0L));
++            values.put("status", "pending");
++            values.put("confidence", clampConfidence(request.optDouble("confidence", 1.0)));
++            values.put("evidence_json", safeJson(request.optString("evidence_json", "")));
++            values.put("created_at", now);
++            values.put("updated_at", now);
++            values.put("source_uid", Binder.getCallingUid());
++            synchronized (mDbLock) {
++                try {
++                    return idJson(openLocked().insert("commitment", null, values));
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "commitmentCreate failed", e);
++                    return errorJson("create_failed");
++                }
++            }
++        }
++
++        @Override
++        public String commitmentUpdate(String requestJson) {
++            enforcePermission();
++            final JSONObject request = parseOrEmpty(requestJson);
++            final long id = request.optLong("id", 0L);
++            final String action = request.optString("action", "").trim();
++            if (id <= 0 || action.isEmpty()) {
++                return errorJson("invalid_request");
++            }
++            final long now = System.currentTimeMillis();
++            final ContentValues values = new ContentValues();
++            switch (action) {
++                case "status":
++                    final String status = request.optString("status", "").trim();
++                    if (status.isEmpty()) {
++                        return errorJson("missing_status");
++                    }
++                    values.put("status", status);
++                    values.put("updated_at", now);
++                    break;
++                case "snooze":
++                    final long dueAt = request.optLong("due_at", 0L);
++                    if (dueAt <= 0) {
++                        return errorJson("missing_due_at");
++                    }
++                    values.put("status", "snoozed");
++                    values.put("due_at", dueAt);
++                    values.put("updated_at", now);
++                    break;
++                case "dismiss":
++                    values.put("status", "dismissed");
++                    values.put("updated_at", now);
++                    values.put("deleted_at", now);
++                    break;
++                default:
++                    return errorJson("unknown_action");
++            }
++            synchronized (mDbLock) {
++                try {
++                    final int updated = openLocked().update("commitment", values, "id = ?",
++                            new String[]{Long.toString(id)});
++                    return updatedJson(updated > 0);
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "commitmentUpdate failed", e);
++                    return errorJson("update_failed");
++                }
++            }
++        }
++
++        @Override
++        public String commitmentQuery(String requestJson) {
++            enforcePermission();
++            final JSONObject request = parseOrEmpty(requestJson);
++            final String mode = request.optString("mode", "active").trim();
++            final long now = request.optLong("now", System.currentTimeMillis());
++            final int limit = boundLimit(request.optInt("limit", 20));
++            final String commitmentColumns = "id, title, description, trigger_type, "
++                    + "trigger_spec_json, due_at, expires_at, status, confidence, "
++                    + "evidence_json, created_at, updated_at";
++            synchronized (mDbLock) {
++                try {
++                    final SQLiteDatabase db = openLocked();
++                    if ("next_due_at".equals(mode)) {
++                        long nextDueAt = 0L;
++                        try (Cursor cursor = db.rawQuery("SELECT due_at FROM commitment "
++                                + "WHERE status IN ('pending','active','snoozed') "
++                                + "AND deleted_at IS NULL AND due_at > ? "
++                                + "ORDER BY due_at ASC LIMIT 1",
++                                new String[]{Long.toString(now)})) {
++                            if (cursor.moveToFirst()) {
++                                nextDueAt = cursor.getLong(0);
++                            }
++                        }
++                        return new JSONObject().put("next_due_at", nextDueAt).toString();
++                    }
++                    final JSONArray commitments = new JSONArray();
++                    if ("due".equals(mode)) {
++                        try (Cursor cursor = db.rawQuery("SELECT " + commitmentColumns
++                                + " FROM commitment "
++                                + "WHERE status IN ('pending','active','snoozed') "
++                                + "AND deleted_at IS NULL AND due_at > 0 AND due_at <= ? "
++                                + "ORDER BY due_at ASC LIMIT ?",
++                                new String[]{Long.toString(now), Integer.toString(limit)})) {
++                            readCommitmentsLocked(cursor, commitments);
++                        }
++                        return wrapArray("commitments", commitments);
++                    }
++                    if ("search".equals(mode)) {
++                        final String query = request.optString("query", "").trim();
++                        if (!query.isEmpty()) {
++                            final String ftsQuery = query.replace('"', ' ').trim();
++                            try (Cursor cursor = db.rawQuery("SELECT c.id, c.title, "
++                                    + "c.description, c.trigger_type, c.trigger_spec_json, "
++                                    + "c.due_at, c.expires_at, c.status, c.confidence, "
++                                    + "c.evidence_json, c.created_at, c.updated_at "
++                                    + "FROM commitment_fts f "
++                                    + "JOIN commitment c ON c.id = f.rowid "
++                                    + "WHERE commitment_fts MATCH ? AND c.deleted_at IS NULL "
++                                    + "ORDER BY c.updated_at DESC LIMIT ?",
++                                    new String[]{ftsQuery, Integer.toString(limit)})) {
++                                readCommitmentsLocked(cursor, commitments);
++                                return wrapArray("commitments", commitments);
++                            } catch (RuntimeException e) {
++                                // Malformed FTS query: fall through to active.
++                            }
++                        }
++                    }
++                    try (Cursor cursor = db.rawQuery("SELECT " + commitmentColumns
++                            + " FROM commitment "
++                            + "WHERE status IN ('pending','active','snoozed') "
++                            + "AND deleted_at IS NULL "
++                            + "ORDER BY CASE WHEN due_at > 0 THEN due_at "
++                            + "ELSE 9223372036854775807 END ASC, updated_at DESC LIMIT ?",
++                            new String[]{Integer.toString(limit)})) {
++                        readCommitmentsLocked(cursor, commitments);
++                    }
++                    return wrapArray("commitments", commitments);
++                } catch (JSONException e) {
++                    throw new IllegalStateException(e);
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "commitmentQuery failed", e);
++                    return errorJson("query_failed");
++                }
++            }
++        }
++
++        private static void readCommitmentsLocked(Cursor cursor, JSONArray commitments) {
++            while (cursor.moveToNext()) {
++                final JSONObject commitment = new JSONObject();
++                try {
++                    commitment.put("id", cursor.getLong(0));
++                    commitment.put("title", cursor.getString(1));
++                    commitment.put("description", cursor.getString(2));
++                    commitment.put("trigger_type", cursor.getString(3));
++                    commitment.put("trigger_spec_json", cursor.getString(4));
++                    commitment.put("due_at", cursor.getLong(5));
++                    commitment.put("expires_at", cursor.getLong(6));
++                    commitment.put("status", cursor.getString(7));
++                    commitment.put("confidence", cursor.getFloat(8));
++                    commitment.put("evidence_json", cursor.getString(9));
++                    commitment.put("created_at", cursor.getLong(10));
++                    commitment.put("updated_at", cursor.getLong(11));
++                } catch (JSONException e) {
++                    continue;
++                }
++                commitments.put(commitment);
++            }
++        }
++
++        // ---------------------------------------------------------------
++        // Watchers
++        // ---------------------------------------------------------------
++
++        @Override
++        public String watcherCreate(String requestJson) {
++            enforcePermission();
++            final JSONObject request = parseOrEmpty(requestJson);
++            final String title = request.optString("title", "").trim();
++            if (title.isEmpty()) {
++                return errorJson("missing_title");
++            }
++            final long now = System.currentTimeMillis();
++            final ContentValues values = new ContentValues();
++            values.put("type", safeLower(request.optString("type", ""), "time"));
++            values.put("title", title);
++            values.put("condition_json", safeJson(request.optString("condition_json", "")));
++            values.put("schedule_json", safeJson(request.optString("schedule_json", "")));
++            values.put("session_target", request.optString("session_target", "").trim());
++            values.put("delivery_json", safeJson(request.optString("delivery_json", "")));
++            values.put("status", "active");
++            values.put("created_at", now);
++            values.put("updated_at", now);
++            values.put("next_run_at", request.optLong("next_run_at", 0L));
++            values.put("running_at", 0L);
++            values.put("last_run_at", 0L);
++            values.put("last_result_hash", "");
++            values.put("failure_count", 0);
++            values.put("failure_alert_at", 0L);
++            values.put("source_uid", Binder.getCallingUid());
++            synchronized (mDbLock) {
++                try {
++                    return idJson(openLocked().insert("watcher", null, values));
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "watcherCreate failed", e);
++                    return errorJson("create_failed");
++                }
++            }
++        }
++
++        @Override
++        public String watcherUpdate(String requestJson) {
++            enforcePermission();
++            final JSONObject request = parseOrEmpty(requestJson);
++            final String action = request.optString("action", "").trim();
++            final long now = request.optLong("now", System.currentTimeMillis());
++            synchronized (mDbLock) {
++                try {
++                    final SQLiteDatabase db = openLocked();
++                    if ("repair_stuck".equals(action)) {
++                        return repairStuckLocked(db,
++                                request.optLong("stale_before", 0L), now);
++                    }
++                    final long id = request.optLong("id", 0L);
++                    if (id <= 0) {
++                        return errorJson("invalid_id");
++                    }
++                    final ContentValues values = new ContentValues();
++                    String where = "id = ?";
++                    switch (action) {
++                        case "stop":
++                            values.put("status", "stopped");
++                            values.put("updated_at", now);
++                            values.put("deleted_at", now);
++                            break;
++                        case "mark_running":
++                            values.put("running_at", now);
++                            values.put("updated_at", now);
++                            where = "id = ? AND status = 'active'";
++                            break;
++                        case "mark_fired":
++                            values.put("status", "fired");
++                            values.put("running_at", 0L);
++                            values.put("last_run_at", now);
++                            values.put("updated_at", now);
++                            values.put("last_result_hash",
++                                    request.optString("result_hash", ""));
++                            break;
++                        case "mark_failed":
++                            values.put("status", "active");
++                            values.put("running_at", 0L);
++                            values.put("last_run_at", now);
++                            values.put("updated_at", now);
++                            values.put("next_run_at", request.optLong("next_run_at", 0L));
++                            values.put("last_result_hash",
++                                    request.optString("result_hash", ""));
++                            values.put("failure_count", request.optLong("failure_count", 0L));
++                            values.put("failure_alert_at",
++                                    request.optLong("failure_alert_at", 0L));
++                            where = "id = ? AND deleted_at IS NULL";
++                            break;
++                        case "mark_noop":
++                            values.put("running_at", 0L);
++                            values.put("last_run_at", now);
++                            values.put("next_run_at", request.optLong("next_run_at", 0L));
++                            values.put("updated_at", now);
++                            if (request.has("result_hash")) {
++                                values.put("last_result_hash",
++                                        request.optString("result_hash", ""));
++                            }
++                            break;
++                        default:
++                            return errorJson("unknown_action");
++                    }
++                    final int updated = db.update("watcher", values, where,
++                            new String[]{Long.toString(id)});
++                    return updatedJson(updated > 0);
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "watcherUpdate failed", e);
++                    return errorJson("update_failed");
++                }
++            }
++        }
++
++        private String repairStuckLocked(SQLiteDatabase db, long staleBefore, long now) {
++            int repaired = 0;
++            final List<long[]> stuck = new ArrayList<>();
++            try (Cursor cursor = db.rawQuery("SELECT id, failure_count FROM watcher "
++                    + "WHERE status = 'active' AND deleted_at IS NULL "
++                    + "AND running_at > 0 AND running_at <= ? "
++                    + "ORDER BY running_at ASC LIMIT 50",
++                    new String[]{Long.toString(staleBefore)})) {
++                while (cursor.moveToNext()) {
++                    stuck.add(new long[]{cursor.getLong(0), cursor.getLong(1)});
++                }
++            }
++            for (long[] watcher : stuck) {
++                final long failures = watcher[1] + 1;
++                final ContentValues values = new ContentValues();
++                values.put("running_at", 0L);
++                values.put("updated_at", now);
++                values.put("next_run_at", now + backoffMillis((int) failures));
++                values.put("last_run_at", now);
++                values.put("failure_count", failures);
++                values.put("last_result_hash", "stuck_running_repaired");
++                if (failures >= 3) {
++                    values.put("failure_alert_at", now);
++                }
++                repaired += db.update("watcher", values, "id = ?",
++                        new String[]{Long.toString(watcher[0])});
++            }
++            try {
++                return new JSONObject().put("repaired", repaired).toString();
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++        }
++
++        @Override
++        public String watcherQuery(String requestJson) {
++            enforcePermission();
++            final JSONObject request = parseOrEmpty(requestJson);
++            final String mode = request.optString("mode", "active").trim();
++            final long now = request.optLong("now", System.currentTimeMillis());
++            final int limit = boundLimit(request.optInt("limit", 20));
++            final String watcherColumns = "id, type, title, condition_json, schedule_json, "
++                    + "session_target, delivery_json, status, created_at, updated_at, "
++                    + "next_run_at, running_at, last_run_at, last_result_hash, "
++                    + "failure_count, failure_alert_at";
++            synchronized (mDbLock) {
++                try {
++                    final SQLiteDatabase db = openLocked();
++                    if ("next_run_at".equals(mode)) {
++                        long nextRunAt = 0L;
++                        try (Cursor cursor = db.rawQuery("SELECT next_run_at FROM watcher "
++                                + "WHERE status = 'active' AND deleted_at IS NULL "
++                                + "AND next_run_at > ? ORDER BY next_run_at ASC LIMIT 1",
++                                new String[]{Long.toString(now)})) {
++                            if (cursor.moveToFirst()) {
++                                nextRunAt = cursor.getLong(0);
++                            }
++                        }
++                        return new JSONObject().put("next_run_at", nextRunAt).toString();
++                    }
++                    final JSONArray watchers = new JSONArray();
++                    if ("due".equals(mode)) {
++                        try (Cursor cursor = db.rawQuery("SELECT " + watcherColumns
++                                + " FROM watcher WHERE status = 'active' "
++                                + "AND deleted_at IS NULL "
++                                + "AND next_run_at > 0 AND next_run_at <= ? "
++                                + "ORDER BY next_run_at ASC LIMIT ?",
++                                new String[]{Long.toString(now), Integer.toString(limit)})) {
++                            readWatchersLocked(cursor, watchers);
++                        }
++                        return wrapArray("watchers", watchers);
++                    }
++                    if ("active_by_type".equals(mode)) {
++                        final String type = safeLower(request.optString("type", ""), "");
++                        if (type.isEmpty()) {
++                            return wrapArray("watchers", watchers);
++                        }
++                        try (Cursor cursor = db.rawQuery("SELECT " + watcherColumns
++                                + " FROM watcher WHERE status = 'active' "
++                                + "AND deleted_at IS NULL AND type = ? "
++                                + "ORDER BY updated_at ASC LIMIT ?",
++                                new String[]{type, Integer.toString(limit)})) {
++                            readWatchersLocked(cursor, watchers);
++                        }
++                        return wrapArray("watchers", watchers);
++                    }
++                    if ("search".equals(mode)) {
++                        final String query = request.optString("query", "").trim();
++                        if (!query.isEmpty()) {
++                            final String ftsQuery = query.replace('"', ' ').trim();
++                            try (Cursor cursor = db.rawQuery("SELECT w.id, w.type, w.title, "
++                                    + "w.condition_json, w.schedule_json, w.session_target, "
++                                    + "w.delivery_json, w.status, w.created_at, w.updated_at, "
++                                    + "w.next_run_at, w.running_at, w.last_run_at, "
++                                    + "w.last_result_hash, w.failure_count, w.failure_alert_at "
++                                    + "FROM watcher_fts f JOIN watcher w ON w.id = f.rowid "
++                                    + "WHERE watcher_fts MATCH ? AND w.deleted_at IS NULL "
++                                    + "ORDER BY w.updated_at DESC LIMIT ?",
++                                    new String[]{ftsQuery, Integer.toString(limit)})) {
++                                readWatchersLocked(cursor, watchers);
++                                return wrapArray("watchers", watchers);
++                            } catch (RuntimeException e) {
++                                // Malformed FTS query: fall through to active.
++                            }
++                        }
++                    }
++                    try (Cursor cursor = db.rawQuery("SELECT " + watcherColumns
++                            + " FROM watcher WHERE status = 'active' AND deleted_at IS NULL "
++                            + "ORDER BY next_run_at ASC, updated_at DESC LIMIT ?",
++                            new String[]{Integer.toString(limit)})) {
++                        readWatchersLocked(cursor, watchers);
++                    }
++                    return wrapArray("watchers", watchers);
++                } catch (JSONException e) {
++                    throw new IllegalStateException(e);
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "watcherQuery failed", e);
++                    return errorJson("query_failed");
++                }
++            }
++        }
++
++        private static void readWatchersLocked(Cursor cursor, JSONArray watchers) {
++            while (cursor.moveToNext()) {
++                final JSONObject watcher = new JSONObject();
++                try {
++                    watcher.put("id", cursor.getLong(0));
++                    watcher.put("type", cursor.getString(1));
++                    watcher.put("title", cursor.getString(2));
++                    watcher.put("condition_json", cursor.getString(3));
++                    watcher.put("schedule_json", cursor.getString(4));
++                    watcher.put("session_target", cursor.getString(5));
++                    watcher.put("delivery_json", cursor.getString(6));
++                    watcher.put("status", cursor.getString(7));
++                    watcher.put("created_at", cursor.getLong(8));
++                    watcher.put("updated_at", cursor.getLong(9));
++                    watcher.put("next_run_at", cursor.getLong(10));
++                    watcher.put("running_at", cursor.getLong(11));
++                    watcher.put("last_run_at", cursor.getLong(12));
++                    watcher.put("last_result_hash", cursor.getString(13));
++                    watcher.put("failure_count", cursor.getInt(14));
++                    watcher.put("failure_alert_at", cursor.getLong(15));
++                } catch (JSONException e) {
++                    continue;
++                }
++                watchers.put(watcher);
++            }
++        }
++
++        private static long backoffMillis(int failureCount) {
++            final int bounded = Math.max(1, Math.min(failureCount, 6));
++            return (1L << (bounded - 1)) * 60L * 1000L;
++        }
++
++        // ---------------------------------------------------------------
++        // Migration
++        // ---------------------------------------------------------------
++
++        @Override
++        public String migrateRows(String store, String rowsJsonArray) {
++            enforcePermission();
++            final String table;
++            final String[] columns;
++            switch (store == null ? "" : store) {
++                case "memory":
++                    table = "memory";
++                    columns = new String[]{"type", "subject", "text", "normalized_text",
++                            "confidence", "status", "evidence_json", "created_at",
++                            "updated_at", "last_used_at", "deleted_at"};
++                    break;
++                case "commitment":
++                    table = "commitment";
++                    columns = new String[]{"title", "description", "normalized_title",
++                            "trigger_type", "trigger_spec_json", "due_at", "expires_at",
++                            "status", "confidence", "evidence_json", "created_at",
++                            "updated_at", "last_checked_at", "failure_count", "deleted_at"};
++                    break;
++                case "watcher":
++                    table = "watcher";
++                    columns = new String[]{"type", "title", "condition_json",
++                            "schedule_json", "session_target", "delivery_json", "status",
++                            "created_at", "updated_at", "next_run_at", "running_at",
++                            "last_run_at", "last_result_hash", "failure_count",
++                            "failure_alert_at", "deleted_at"};
++                    break;
++                default:
++                    return errorJson("unknown_store");
++            }
++            final JSONArray rows;
++            try {
++                rows = new JSONArray(rowsJsonArray == null || rowsJsonArray.isEmpty()
++                        ? "[]" : rowsJsonArray);
++            } catch (JSONException e) {
++                return errorJson("invalid_rows_json");
++            }
++            int inserted = 0;
++            int skipped = 0;
++            synchronized (mDbLock) {
++                final SQLiteDatabase db;
++                try {
++                    db = openLocked();
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "migrate open failed", e);
++                    return errorJson("migrate_failed");
++                }
++                db.beginTransaction();
++                try {
++                    for (int i = 0; i < rows.length(); i++) {
++                        final JSONObject row = rows.optJSONObject(i);
++                        if (row == null || row.optLong("id", 0L) <= 0) {
++                            skipped++;
++                            continue;
++                        }
++                        final ContentValues values = new ContentValues();
++                        // Legacy ids are preserved: watcher and commitment ids are
++                        // referenced from alarms and delivered notifications.
++                        values.put("id", row.optLong("id"));
++                        for (String column : columns) {
++                            if (row.isNull(column)) {
++                                values.putNull(column);
++                            } else {
++                                values.put(column, row.optString(column, ""));
++                            }
++                        }
++                        values.put("source_uid", Binder.getCallingUid());
++                        final long id = db.insertWithOnConflict(table, null, values,
++                                SQLiteDatabase.CONFLICT_IGNORE);
++                        if (id > 0) {
++                            inserted++;
++                        } else {
++                            skipped++;
++                        }
++                    }
++                    db.setTransactionSuccessful();
++                } catch (RuntimeException e) {
++                    Slog.w(TAG, "migrate failed", e);
++                    return errorJson("migrate_failed");
++                } finally {
++                    db.endTransaction();
++                }
++            }
++            final JSONObject json = new JSONObject();
++            try {
++                json.put("inserted", inserted);
++                json.put("skipped", skipped);
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++            return json.toString();
++        }
++
++        // ---------------------------------------------------------------
++        // Storage
++        // ---------------------------------------------------------------
++
++        private SQLiteDatabase openLocked() {
++            if (mDb != null && mDb.isOpen()) {
++                return mDb;
++            }
++            final File dir = new File(Environment.getDataSystemDirectory(),
++                    OPENPHONE_SYSTEM_DIR);
++            if (!dir.exists() && !dir.mkdirs()) {
++                throw new IllegalStateException(
++                        "Unable to create OpenPhone system directory: " + dir);
++            }
++            final SQLiteDatabase db = SQLiteDatabase.openOrCreateDatabase(
++                    new File(dir, DB_FILE), null);
++            final int version = db.getVersion();
++            if (version < SCHEMA_VERSION) {
++                db.beginTransaction();
++                try {
++                    // Durable user data: migrations must be additive and stepwise,
++                    // never DROP TABLE.
++                    if (version < 1) {
++                        createSchemaLocked(db);
++                    }
++                    db.setVersion(SCHEMA_VERSION);
++                    db.setTransactionSuccessful();
++                } finally {
++                    db.endTransaction();
++                }
++            }
++            mDb = db;
++            return db;
++        }
++
++        private static void createSchemaLocked(SQLiteDatabase db) {
++            db.execSQL("CREATE TABLE IF NOT EXISTS memory ("
++                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
++                    + "type TEXT NOT NULL,"
++                    + "subject TEXT,"
++                    + "text TEXT NOT NULL,"
++                    + "normalized_text TEXT NOT NULL UNIQUE,"
++                    + "confidence REAL NOT NULL,"
++                    + "status TEXT NOT NULL,"
++                    + "evidence_json TEXT,"
++                    + "created_at INTEGER NOT NULL,"
++                    + "updated_at INTEGER NOT NULL,"
++                    + "last_used_at INTEGER,"
++                    + "deleted_at INTEGER,"
++                    + "source_uid INTEGER NOT NULL DEFAULT 0"
++                    + ")");
++            db.execSQL("CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts4("
++                    + "type, subject, text, content='memory')");
++            db.execSQL("CREATE TRIGGER IF NOT EXISTS memory_ai AFTER INSERT ON memory "
++                    + "BEGIN INSERT INTO memory_fts(rowid, type, subject, text) "
++                    + "VALUES (new.id, new.type, new.subject, new.text); END");
++            db.execSQL("CREATE TRIGGER IF NOT EXISTS memory_ad AFTER DELETE ON memory "
++                    + "BEGIN DELETE FROM memory_fts WHERE rowid = old.id; END");
++            db.execSQL("CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory "
++                    + "BEGIN DELETE FROM memory_fts WHERE rowid = old.id; "
++                    + "INSERT INTO memory_fts(rowid, type, subject, text) "
++                    + "VALUES (new.id, new.type, new.subject, new.text); END");
++            db.execSQL("CREATE INDEX IF NOT EXISTS memory_status_idx "
++                    + "ON memory(status, updated_at)");
++            db.execSQL("CREATE INDEX IF NOT EXISTS memory_normalized_idx "
++                    + "ON memory(normalized_text)");
++
++            db.execSQL("CREATE TABLE IF NOT EXISTS commitment ("
++                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
++                    + "title TEXT NOT NULL,"
++                    + "description TEXT,"
++                    + "normalized_title TEXT NOT NULL,"
++                    + "trigger_type TEXT NOT NULL,"
++                    + "trigger_spec_json TEXT,"
++                    + "due_at INTEGER,"
++                    + "expires_at INTEGER,"
++                    + "status TEXT NOT NULL,"
++                    + "confidence REAL NOT NULL,"
++                    + "evidence_json TEXT,"
++                    + "created_at INTEGER NOT NULL,"
++                    + "updated_at INTEGER NOT NULL,"
++                    + "last_checked_at INTEGER,"
++                    + "failure_count INTEGER NOT NULL DEFAULT 0,"
++                    + "deleted_at INTEGER,"
++                    + "source_uid INTEGER NOT NULL DEFAULT 0"
++                    + ")");
++            db.execSQL("CREATE VIRTUAL TABLE IF NOT EXISTS commitment_fts USING fts4("
++                    + "title, description, trigger_type, content='commitment')");
++            db.execSQL("CREATE TRIGGER IF NOT EXISTS commitment_ai AFTER INSERT ON commitment "
++                    + "BEGIN INSERT INTO commitment_fts(rowid, title, description, trigger_type) "
++                    + "VALUES (new.id, new.title, new.description, new.trigger_type); END");
++            db.execSQL("CREATE TRIGGER IF NOT EXISTS commitment_ad AFTER DELETE ON commitment "
++                    + "BEGIN DELETE FROM commitment_fts WHERE rowid = old.id; END");
++            db.execSQL("CREATE TRIGGER IF NOT EXISTS commitment_au AFTER UPDATE ON commitment "
++                    + "BEGIN DELETE FROM commitment_fts WHERE rowid = old.id; "
++                    + "INSERT INTO commitment_fts(rowid, title, description, trigger_type) "
++                    + "VALUES (new.id, new.title, new.description, new.trigger_type); END");
++            db.execSQL("CREATE INDEX IF NOT EXISTS commitment_status_idx "
++                    + "ON commitment(status, due_at)");
++            db.execSQL("CREATE INDEX IF NOT EXISTS commitment_title_idx "
++                    + "ON commitment(normalized_title)");
++            db.execSQL("CREATE INDEX IF NOT EXISTS commitment_updated_idx "
++                    + "ON commitment(deleted_at, updated_at)");
++
++            db.execSQL("CREATE TABLE IF NOT EXISTS watcher ("
++                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
++                    + "type TEXT NOT NULL,"
++                    + "title TEXT NOT NULL,"
++                    + "condition_json TEXT NOT NULL,"
++                    + "schedule_json TEXT NOT NULL,"
++                    + "session_target TEXT,"
++                    + "delivery_json TEXT NOT NULL,"
++                    + "status TEXT NOT NULL,"
++                    + "created_at INTEGER NOT NULL,"
++                    + "updated_at INTEGER NOT NULL,"
++                    + "next_run_at INTEGER,"
++                    + "running_at INTEGER,"
++                    + "last_run_at INTEGER,"
++                    + "last_result_hash TEXT,"
++                    + "failure_count INTEGER NOT NULL DEFAULT 0,"
++                    + "failure_alert_at INTEGER,"
++                    + "deleted_at INTEGER,"
++                    + "source_uid INTEGER NOT NULL DEFAULT 0"
++                    + ")");
++            db.execSQL("CREATE VIRTUAL TABLE IF NOT EXISTS watcher_fts USING fts4("
++                    + "type, title, condition_json, content='watcher')");
++            db.execSQL("CREATE TRIGGER IF NOT EXISTS watcher_ai AFTER INSERT ON watcher "
++                    + "BEGIN INSERT INTO watcher_fts(rowid, type, title, condition_json) "
++                    + "VALUES (new.id, new.type, new.title, new.condition_json); END");
++            db.execSQL("CREATE TRIGGER IF NOT EXISTS watcher_ad AFTER DELETE ON watcher "
++                    + "BEGIN DELETE FROM watcher_fts WHERE rowid = old.id; END");
++            db.execSQL("CREATE TRIGGER IF NOT EXISTS watcher_au AFTER UPDATE ON watcher "
++                    + "BEGIN DELETE FROM watcher_fts WHERE rowid = old.id; "
++                    + "INSERT INTO watcher_fts(rowid, type, title, condition_json) "
++                    + "VALUES (new.id, new.type, new.title, new.condition_json); END");
++            db.execSQL("CREATE INDEX IF NOT EXISTS watcher_status_idx "
++                    + "ON watcher(status, next_run_at)");
++            db.execSQL("CREATE INDEX IF NOT EXISTS watcher_type_idx "
++                    + "ON watcher(type, status)");
++        }
++
++        // ---------------------------------------------------------------
++        // Helpers
++        // ---------------------------------------------------------------
++
++        private static long countLocked(SQLiteDatabase db, String table) {
++            try (Cursor cursor = db.rawQuery("SELECT COUNT(*) FROM " + table
++                    + " WHERE deleted_at IS NULL", null)) {
++                return cursor.moveToFirst() ? cursor.getLong(0) : -1L;
++            }
++        }
++
++        private void enforcePermission() {
++            mContext.enforceCallingOrSelfPermission(
++                    PERMISSION_USE_ASSISTANT_DATA,
++                    "OpenPhone assistant data requires USE_ASSISTANT_DATA");
++        }
++
++        private static int boundLimit(int limit) {
++            return Math.max(1, Math.min(limit, MAX_LIMIT));
++        }
++
++        private static double clampConfidence(double confidence) {
++            if (Double.isNaN(confidence)) {
++                return 1.0;
++            }
++            return Math.max(0.0, Math.min(confidence, 1.0));
++        }
++
++        private static String wrapArray(String key, JSONArray array) {
++            final JSONObject json = new JSONObject();
++            try {
++                json.put(key, array);
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++            return json.toString();
++        }
++
++        private static String idJson(long id) {
++            try {
++                return new JSONObject().put("id", id).toString();
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++        }
++
++        private static String updatedJson(boolean updated) {
++            try {
++                return new JSONObject().put("updated", updated).toString();
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++        }
++
++        private static String errorJson(String error) {
++            final JSONObject json = new JSONObject();
++            try {
++                json.put("error", error);
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++            return json.toString();
++        }
++
++        private static JSONObject parseOrEmpty(String json) {
++            try {
++                return new JSONObject(json == null || json.isEmpty() ? "{}" : json);
++            } catch (JSONException e) {
++                return new JSONObject();
++            }
++        }
++
++        private static String safeJson(String json) {
++            if (json == null || json.trim().isEmpty()) {
++                return "{}";
++            }
++            try {
++                return new JSONObject(json).toString();
++            } catch (JSONException e) {
++                return "{}";
++            }
++        }
++
++        private static String safe(String value, String fallback) {
++            return value == null || value.trim().isEmpty() ? fallback : value.trim();
++        }
++
++        private static String normalize(String text) {
++            String normalized = text == null ? "" : text.trim().toLowerCase(Locale.US);
++            while (normalized.contains("  ")) {
++                normalized = normalized.replace("  ", " ");
++            }
++            return normalized;
++        }
++
++        private static String safeLower(String value, String fallback) {
++            final String clean = value == null ? "" : value.trim().toLowerCase(Locale.US);
++            return clean.isEmpty() ? fallback : clean;
++        }
++    }
++}
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+index f60d864a210f..247558e7ded3 100644
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -214,6 +214,7 @@ import com.android.server.os.NativeTombstoneManagerService;
+ import com.android.server.os.SchedulingPolicyService;
+ import com.android.server.os.instrumentation.DynamicInstrumentationManagerService;
+ import com.android.server.openphone.OpenPhoneAgentManagerService;
++import com.android.server.openphone.OpenPhoneAssistantDataService;
+ import com.android.server.openphone.OpenPhoneContextIndexService;
+ import com.android.server.pdb.PersistentDataBlockService;
+ import com.android.server.people.PeopleService;
+@@ -1687,6 +1688,10 @@ public final class SystemServer implements Dumpable {
+             mSystemServiceManager.startService(OpenPhoneContextIndexService.class);
+             t.traceEnd();
+ 
++            t.traceBegin("StartOpenPhoneAssistantDataService");
++            mSystemServiceManager.startService(OpenPhoneAssistantDataService.class);
++            t.traceEnd();
++
+             if (android.app.supervision.flags.Flags.supervisionApi()
+                     && (!isWatch || android.app.supervision.flags.Flags.supervisionApiOnWear())) {
+                 t.traceBegin("StartSupervisionService");
+-- 
+2.43.0
+

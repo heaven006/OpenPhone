@@ -18,15 +18,24 @@ with YOLO visual state, calendar depth —
 update/delete/check-availability — and phone depth — missed-call
 follow-ups + call-back watchers) passed reviewed device smokes, plus two
 Phase 10 hardening slices (OTA-safe store migrations; context index
-promoted to an OS-owned `system_server` service). See
-"Architecture Audit and Revised Direction" below for the full record.
+promoted to an OS-owned `system_server` service; memory + commitment +
+watcher stores promoted to a second OS-owned `system_server` service —
+`openphone_assistant_data` — closing the Phase 10 store-promotion
+track). See "Architecture Audit and Revised Direction" below for the
+full record.
 
-The last fully validated slice is the context-index OS-service promotion
-(full OTA `.worktree/artifacts/tegu/openphone_tegu-context-service-ota.zip`,
-`sha256=4adee5fa3a2ea1bf7bb328b4d96afa16710e9084603b4a85907560f0617c34ab`,
-sideloaded; assistant v112 0.1.76-dev on `/system_ext`; 1297 legacy
-context events migrated into `/data/system/openphone/context_index.db`),
-with the device reset to `openphone_autonomy_mode=reviewed`.
+The last fully validated slice is the assistant-data OS-service
+promotion (full OTA
+`.worktree/artifacts/tegu/openphone_tegu-assistant-data-service-ota.zip`,
+`sha256=095f0aa520ee2f390fc858732ca4767bf15e819282137538bd76999b957d883c`,
+sideloaded; assistant v113 0.1.77-dev APK
+`OpenPhoneAssistant-assistant-data-v1.apk`
+`sha256=b72d3b304529fb0de6f7bac56559ba4753bd42514d0e9199c1d7594e8496ec93`
+pushed onto `/system_ext`; pre-OTA legacy rows migrated 1:1 into
+`/data/system/openphone/assistant_data.db` with row ids preserved —
+2 memories, 4 commitments, 9 watchers, including three sentinel
+marker rows that kept their exact pre-OTA ids), with the device
+reset to `openphone_autonomy_mode=reviewed`.
 
 Current physically validated Pixel 9a baseline:
 
@@ -1817,6 +1826,149 @@ Device acceptance (Pixel 9a, all on the OTA build):
 Cleanup: test notification cleared (`pm clear com.android.shell`),
 dev key `null`, autonomy `reviewed`, adb unrooted.
 
+### Phase 10 hardening: assistant data store promoted to an OS-owned service (2026-06-11)
+
+Third (and final) Phase 10 store-promotion slice: the durable
+**memory**, **commitment**, and **watcher** stores now live in a new
+OS-owned `system_server` service `openphone_assistant_data`. Single
+service intentionally — the three tables share the same lifecycle
+(written by the assistant, read by background watchers and alarms),
+so one binder + one DB file simplifies the OS surface without losing
+isolation guarantees vs. the assistant.
+
+Patches:
+- `patches/frameworks_base/0015-OpenPhone-add-OS-owned-assistant-data-service.patch`
+  (EC2 commit `f67c3ccf752a`): `IOpenPhoneAssistantDataService.aidl`
+  with `getServiceStatus`, `memorySave`/`memoryQuery`,
+  `commitmentCreate`/`commitmentUpdate`/`commitmentQuery`,
+  `watcherCreate`/`watcherUpdate`/`watcherQuery`, and `migrateRows`
+  (all String-JSON for now to match the existing service contract);
+  `OpenPhoneAssistantDataManager` (`@SystemService`),
+  `Context.OPENPHONE_ASSISTANT_DATA_SERVICE = "openphone_assistant_data"`,
+  SystemServiceRegistry registration, `USE_ASSISTANT_DATA` signature
+  permission, SystemServer start hook, and
+  `OpenPhoneAssistantDataService` owning
+  `/data/system/openphone/assistant_data.db` (single SQLite database
+  with `memory` / `commitment` / `watcher` tables, FTS4 + ai/ad/au
+  triggers + indices, `source_uid`-stamped writes, additive
+  `db.getVersion()` migrations — never DROP TABLE).
+- `patches/system_sepolicy/0003-OpenPhone-label-assistant-data-service.patch`
+  (EC2 sepolicy commit `2e035abc2`): `openphone_assistant_data_service`
+  type (`system_api_service, system_server_service,
+  service_manager_type`), `service_contexts` mapping, and
+  `service_fuzzer_bindings.go` `EXCEPTION_NO_FUZZER`.
+
+Assistant side: `MemoryStore`, `CommitmentStore`, and `WatcherStore`
+were rewritten as binder clients that keep their existing public APIs
+(so `FrameworkToolExecutor` and `OpenPhoneWatcherScheduler` did not
+need any call-site changes). Each constructor runs a one-time chunked
+migration (100 rows / binder transaction) of the legacy app-local
+DB into the OS store via `OpenPhoneAssistantDataManager.migrateRows`,
+**preserving row ids** (watcher and commitment ids are referenced
+from alarm `PendingIntents` and delivered notifications, so they must
+not change). Migrations are gated by per-store `SharedPreferences`
+flags (`memory_os_store_migrated_v1`,
+`commitment_os_store_migrated_v1`, `watcher_os_store_migrated_v1`)
+and only set after a fully successful copy. Construction is wrapped
+in try/catch so direct-boot creation does not crash the assistant
+before user unlock.
+
+Build & install:
+- v113 0.1.77-dev assistant APK,
+  `OpenPhoneAssistant-assistant-data-v1.apk` sha256
+  `b72d3b304529fb0de6f7bac56559ba4753bd42514d0e9199c1d7594e8496ec93`.
+- Full OTA `openphone_tegu-assistant-data-service-ota.zip` sha256
+  `095f0aa520ee2f390fc858732ca4767bf15e819282137538bd76999b957d883c`
+  (kept locally at
+  `.worktree/artifacts/tegu/openphone_tegu-assistant-data-service-ota.zip`).
+  Sideloaded onto the Pixel 9a — slot flipped from `_b` to `_a`,
+  `ro.build.version.incremental` 1781136126 → 1781161306.
+
+Build/sideload gotchas hit (and fixed in tree where they belonged):
+1. The first OTA build shipped versionCode=112 even though the local
+   manifest had been bumped to 113. Root cause: `scripts/apply-patches.sh`
+   uses `cp -R overlay/.` (no `--delete`), so the EC2 tree retained
+   stale files and the build raced — manifest changes that arrived
+   over rsync after the build had already begun parsing were lost.
+   Workaround: rebuild only the assistant APK (`m OpenPhoneAssistant`)
+   after the OTA finishes.
+2. The same overlay-copy pattern left a stale
+   `MainActivity.java` on EC2 even though the local repo had it
+   replaced by `MainActivity.kt` (Kotlin redeclaration error). Fixed
+   by manually removing the stale .java before rebuilding.
+3. The stray zumapro-*.dtb files reappeared after the kernel-prebuilt
+   directory was synced. Permanently fixed by adding a stray-DTB
+   sweeper to `scripts/common.sh:ensure_tegu_dtb` so any *.dtb in
+   `device/google/tegu-kernels/6.1/` other than the pinned `tegu.dtb`
+   is removed before the build (the rule that concatenated everything
+   into `vendor_kernel_boot` has not changed; this is a defense in
+   depth).
+4. After the OTA, an empty root-owned `assistant_data.db` shadowed
+   the system_server-owned file because I had earlier opened it via
+   `adb shell sqlite3` while rooted. system_server (uid 1000) could
+   not read it (`SQLITE_CANTOPEN`). Removing the empty file let the
+   service create the real one with `system:system 0600` on next
+   call. Standing rule recorded for future post-OTA work: never
+   touch `/data/system/openphone/*.db` from `adb shell` while rooted
+   — let the service create them.
+5. The same post-OTA package_cache staleness gotcha as the previous
+   slice — PackageManager initially reported the old versionCode for
+   the new APK. `rm -rf /data/system/package_cache/* + reboot` fixed
+   it; will recur on every future OTA over an `adb remount` device.
+
+Pre-OTA baseline rows (with three marker rows inserted by the smoke
+to prove id preservation): memory=2 (incl. id=3
+`MIGRATION_MARKER_MEMORY_V113`), commitment=4 (incl. id=5
+`MIGRATION_MARKER_COMMITMENT_V113`), watcher=9 (incl. id=18
+`MIGRATION_MARKER_WATCHER_V113`).
+
+Device validation (Pixel 9a, post-OTA, post-APK push, autonomy
+toggled to `yolo` for the save smoke and back to `reviewed` for
+cleanup):
+
+1. `service check openphone_assistant_data` → found.
+   `service check openphone_context` → still found (previous slice
+   intact). SystemServer trace logs show all four lifecycle phases
+   (`onStartUser`, `OnBootPhase_1000`, `onUnlockingUser`,
+   `onUnlockedUser`, `onCompletedEventUser_Unlocked`).
+2. OS-owned `/data/system/openphone/assistant_data.db` (owner
+   `system:system`, mode 0600) was created lazily on first binder
+   call and now contains all three tables + FTS triggers.
+3. One-time migrations ran on first assistant task:
+   ```
+   I OpenPhoneCommitments: Migrated 4 legacy commitments into the OS store
+   I OpenPhoneMemoryStore: Migrated 2 legacy memories into the OS store
+   I OpenPhoneWatcherStore: Migrated 9 legacy watchers into the OS store
+   ```
+   Prefs:
+   `memory_os_store_migrated_v1=true / count=2`,
+   `commitment_os_store_migrated_v1=true / count=4`,
+   `watcher_os_store_migrated_v1=true / count=9`.
+4. **Row ids preserved** — all three marker rows survived the
+   migration with their pre-OTA ids: memory id=3, commitment id=5,
+   watcher id=18. Counts in the OS store match the pre-OTA legacy
+   counts exactly (memory=2, commitment=4, watcher=9). FTS works
+   over migrated rows (e.g. `memory_fts MATCH 'earl OR migration'`
+   → 1 hit; `watcher_fts MATCH 'watcher OR time OR notification'`
+   → 8 hits).
+5. End-to-end binder write smoke: under `autonomy=yolo`,
+   `run-assistant-task.sh` task "Use memory_save to durably remember:
+   my favorite tea is earl grey with milk" — the model called
+   `memory_save`, the assistant client crossed the binder into
+   system_server, and the tool result returned
+   `{"status":"memory.saved","memory_id":4}`. The OS DB then showed
+   row id=4 type=preference subject=user with the exact text.
+   Trajectory `20260611-130332-task-1154551567865`. (A first attempt
+   under `autonomy=reviewed` correctly stopped on
+   `action_policy_confirm` instead of writing — confirming the
+   assistant-side policy gate still fires before the binder call,
+   trajectory `20260611-125807-task-829643543129`.)
+
+Cleanup: row id=4 tombstoned (`UPDATE memory SET deleted_at=now`),
+autonomy back to `reviewed`, dev key `null`, adb unrooted.
+Phase 10 store-promotion track is now **complete** (context,
+memory, commitment, watcher all live in OS-owned services).
+
 ## Not Yet Implemented
 
 - Hardware validation on the Pixel 9a. Full OpenPhone now boots and the
@@ -2547,16 +2699,26 @@ with YOLO visual state, calendar depth —
 update/delete/check-availability — and phone depth — missed-call
 follow-ups, contact-name joins, call-back watchers) are complete and
 device-validated (see the Phase C slice sections above), plus two
-Phase 10 hardening slices: OTA-safe store migrations (all four stores
-use stepwise additive `onUpgrade`, validated with a real v1→v2 upgrade
-on device) and the context index promoted into the OS-owned
-`openphone_context` `system_server` service (full OTA sideloaded; 1297
-legacy events migrated into `/data/system/openphone/context_index.db`;
-end-to-end `context_search` smoke green). Continue the Phase 10
-promotion track with the remaining assistant-local stores
-(memory/commitment/watcher) — one slice at a time, each closing with
+Phase 10 hardening slices completed and device-validated: OTA-safe
+store migrations (all four stores use stepwise additive `onUpgrade`,
+validated with a real v1→v2 upgrade on device); the context index
+promoted into the OS-owned `openphone_context` `system_server`
+service (full OTA sideloaded; 1297 legacy events migrated into
+`/data/system/openphone/context_index.db`; end-to-end
+`context_search` smoke green); and the **assistant data store**
+(memory + commitment + watcher) promoted into a second OS-owned
+`openphone_assistant_data` `system_server` service (full OTA
+sideloaded; 2 memories + 4 commitments + 9 watchers migrated 1:1
+with row ids preserved into `/data/system/openphone/assistant_data.db`;
+end-to-end `memory_save` binder write smoke green under
+`autonomy=yolo`, autonomy gate also confirmed under `reviewed`).
+The Phase 10 store-promotion track is now complete; continue Phase 10
+hardening with the remaining items (framework-owned screen
+extraction, SELinux hardening, UI/orchestrator/executor process
+separation, broker identity/session hardening, production audit
+storage/export, release/eval test suites) — each slice closing with
 the standard EC2 build / install / reviewed + YOLO smoke / evidence
-flow (framework changes need full OTA).
+flow.
 
 Standing workflow rules remain unchanged: use the privileged assistant APK
 push for assistant-only changes and full OTA only for framework/sepolicy/
