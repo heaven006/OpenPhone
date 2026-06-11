@@ -1,0 +1,86 @@
+From 37cd840435296f448d0d378bd6f23c58c9c01de5 Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Thu, 11 Jun 2026 10:51:39 +0000
+Subject: [PATCH] OpenPhone: lock /data/system/openphone/ to system_server
+
+Add openphone_system_data_file SELinux type and a file_contexts entry
+mapping /data/system/openphone(/.*)? to it. Allow system_server to
+manage these files and add neverallow rules so no app or vendor
+domain can read or modify them directly. Update file_contexts_test_data
+so the freeze and contexts tests stay green.
+
+Change-Id: I7c9d1e3f5079182a3b4c5d6e7f80910a1b2c3d4e
+---
+ contexts/file_contexts_test_data |  3 +++
+ private/file.te                  |  5 +++++
+ private/file_contexts            |  1 +
+ private/system_server.te         | 11 +++++++++++
+ 4 files changed, 20 insertions(+)
+
+diff --git a/contexts/file_contexts_test_data b/contexts/file_contexts_test_data
+index 59745708d..fd32693da 100644
+--- a/contexts/file_contexts_test_data
++++ b/contexts/file_contexts_test_data
+@@ -854,6 +854,9 @@
+ 
+ /data                                                             system_data_root_file
+ /data/does_not_exist                                              system_data_file
++/data/system/openphone                                            openphone_system_data_file
++/data/system/openphone/assistant_data.db                          openphone_system_data_file
++/data/system/openphone/context_index.db                           openphone_system_data_file
+ /data/system/environ                                              environ_system_data_file
+ /data/system/environ/test                                         environ_system_data_file
+ /data/system/packages.list                                        packages_list_file
+diff --git a/private/file.te b/private/file.te
+index b832da44c..ef57cefe8 100644
+--- a/private/file.te
++++ b/private/file.te
+@@ -20,6 +20,11 @@ type fs_bpf_cputimeinstate, fs_type, bpffs_type;
+ 
+ # /data/system/mediadrm
+ type mediadrm_system_data_file, file_type, data_file_type, core_data_file_type;
++# OpenPhone OS-owned system data: holds the durable context index and
++# assistant data (memory/commitment/watcher) databases. Only system_server
++# is allowed to read or write these files; neverallow rules below ensure
++# no app or vendor domain can reach them directly.
++type openphone_system_data_file, file_type, data_file_type, core_data_file_type;
+ 
+ # /data/misc/storaged
+ type storaged_data_file, file_type, data_file_type, core_data_file_type;
+diff --git a/private/file_contexts b/private/file_contexts
+index bc79eebf7..d94ac4c68 100644
+--- a/private/file_contexts
++++ b/private/file_contexts
+@@ -592,6 +592,7 @@
+ /data		u:object_r:system_data_root_file:s0
+ /data/(.*)?		u:object_r:system_data_file:s0
+ /data/userdata_exp\.[^/]+ u:object_r:exp_partition_data_file:s0
++/data/system/openphone(/.*)? u:object_r:openphone_system_data_file:s0
+ /data/system/environ(/.*)? u:object_r:environ_system_data_file:s0
+ /data/system/packages\.list u:object_r:packages_list_file:s0
+ /data/system/game_mode_intervention\.list u:object_r:game_mode_intervention_list_file:s0
+diff --git a/private/system_server.te b/private/system_server.te
+index d85caed61..148e94edc 100644
+--- a/private/system_server.te
++++ b/private/system_server.te
+@@ -545,6 +545,17 @@ allow system_server ota_package_file:file create_file_perms;
+ 
+ # Manage system data files.
+ allow system_server system_data_file:dir create_dir_perms;
++# OpenPhone OS-owned databases live under /data/system/openphone/.
++allow system_server openphone_system_data_file:dir create_dir_perms;
++allow system_server openphone_system_data_file:file create_file_perms;
++
++# OpenPhone OS-owned data: only system_server may touch /data/system/openphone/*.
++# This protects the durable context index and the assistant data (memory,
++# commitment, watcher) stores from any app or vendor domain.
++neverallow { domain -system_server -init -vold -kernel -installd } openphone_system_data_file:file ~{ getattr };
++neverallow { domain -system_server -init -vold -kernel -installd } openphone_system_data_file:dir ~{ getattr search };
++neverallow appdomain openphone_system_data_file:file *;
++neverallow appdomain openphone_system_data_file:dir *;
+ allow system_server system_data_file:notdevfile_class_set create_file_perms;
+ allow system_server packages_list_file:file create_file_perms;
+ allow system_server game_mode_intervention_list_file:file create_file_perms;
+-- 
+2.43.0
+

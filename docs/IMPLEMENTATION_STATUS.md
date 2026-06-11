@@ -1969,6 +1969,79 @@ autonomy back to `reviewed`, dev key `null`, adb unrooted.
 Phase 10 store-promotion track is now **complete** (context,
 memory, commitment, watcher all live in OS-owned services).
 
+### Phase 10 hardening: SELinux lockdown of /data/system/openphone/ (2026-06-11)
+
+First slice of the Phase 10 SELinux hardening track. Adds a
+dedicated `openphone_system_data_file` SELinux type for
+`/data/system/openphone/` so the OS-owned context index and
+assistant data (memory/commitment/watcher) databases are no longer
+labeled with the catch-all `system_data_file`.
+
+Patch:
+- `patches/system_sepolicy/0004-OpenPhone-lock-system-data-to-system-server.patch`
+  (EC2 sepolicy commit `37cd84043`):
+  - `private/file.te`: defines
+    `type openphone_system_data_file, file_type, data_file_type, core_data_file_type;`
+    (in `private/`, NOT `public/` — adding to `public/` breaks the
+    `sepolicy_freeze_test` and `treble_sepolicy_tests_*` because that
+    is the public ABI surface).
+  - `private/file_contexts`: maps
+    `/data/system/openphone(/.*)? → openphone_system_data_file`.
+  - `contexts/file_contexts_test_data`: required test entries so
+    `plat_file_contexts_data_test` stays green.
+  - `private/system_server.te`: explicit allow rules for
+    `system_server` (`create_dir_perms` + `create_file_perms` on the
+    new type) and four `neverallow` rules:
+    - `neverallow { domain -system_server -init -vold -kernel -installd } openphone_system_data_file:file ~{ getattr };`
+    - `neverallow { domain -system_server -init -vold -kernel -installd } openphone_system_data_file:dir ~{ getattr search };`
+    - `neverallow appdomain openphone_system_data_file:file *;`
+    - `neverallow appdomain openphone_system_data_file:dir *;`
+  These are checked at compile time by `sepolicy_neverallows`, so
+  any future change that accidentally tries to grant an app domain
+  access to these files would fail to build.
+
+Build & install:
+- Full OTA `openphone_tegu-sepolicy-hardening-ota.zip` sha256
+  `7a507bb05492c0a75f9512282ada035d305659bb9250963e4173fa10093a9271`
+  (kept at
+  `.worktree/artifacts/tegu/openphone_tegu-sepolicy-hardening-ota.zip`).
+  Sideloaded; `ro.build.version.incremental` 1781161306 → 1781175115.
+- v114 0.1.78-dev assistant APK
+  `OpenPhoneAssistant-sepolicy-hardening-v1.apk` sha256
+  `87bdf8560ce8d9f46053e7d4bebda38069ccc78b3ecfb07bfe38004378eb41eb`
+  pushed (the OTA itself baked the v113 APK because of the same
+  manifest/build race documented in the previous slice; rebuilding
+  `m OpenPhoneAssistant` after the OTA fixes it).
+
+Device validation (Pixel 9a, post-OTA, post-APK push, `getenforce`
+= `Enforcing`):
+
+1. `/data/system/openphone/` and every file inside it now show
+   `u:object_r:openphone_system_data_file:s0` instead of
+   `system_data_file`. Relabeling happened automatically during
+   first boot — the OTA install hook runs `restorecon -R /data` for
+   types whose file_contexts changed, so no manual action was
+   required.
+2. `system_server` (uid 1000) can still read every OS DB:
+   `sqlite3 assistant_data.db` returns the expected counts (memory=3
+   incl. tombstone, commitment=4, watcher=9) and
+   `sqlite3 context_index.db` returns 1375 events.
+3. **Zero AVC denials targeting `openphone_system_data_file`** in
+   either logcat or dmesg — both the explicit allow rules for
+   system_server and the neverallow rules are correctly scoped.
+4. Both OS services are still registered:
+   `service check openphone_assistant_data` → found,
+   `service check openphone_context` → found.
+5. End-to-end binder write smoke under `autonomy=yolo` —
+   `run-assistant-task.sh` task using `memory_save` returned
+   `{"status":"memory.saved","memory_id":5}` and the OS DB then
+   showed row id=5 with the exact text. A second smoke under v114
+   (post-APK push) saved id=6 the same way. No AVC denials in
+   either run.
+
+Cleanup: rows 5 and 6 tombstoned, autonomy back to `reviewed`,
+adb unrooted.
+
 ## Not Yet Implemented
 
 - Hardware validation on the Pixel 9a. Full OpenPhone now boots and the

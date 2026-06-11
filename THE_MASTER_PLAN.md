@@ -1767,7 +1767,14 @@ Tasks:
 
 - Move screen/UI hierarchy extraction from assistant-side development path to
   framework-owned services.
-- Harden SELinux domains.
+- Harden SELinux domains. (FIRST SLICE DONE 2026-06-11: dedicated
+  `openphone_system_data_file` type added in private/file.te +
+  file_contexts mapping for `/data/system/openphone/`,
+  system_server-only allow rules, and four neverallow rules
+  enforced at compile time. Patch
+  `patches/system_sepolicy/0004`. OTA sideloaded, label change
+  auto-applied via restorecon; zero AVC denials and end-to-end
+  binder smokes pass.)
 - Separate assistant UI, orchestrator, and executors.
 - Strengthen broker identity/session handling.
 - Add production-grade audit storage and export.
