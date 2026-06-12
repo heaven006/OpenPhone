@@ -24,7 +24,8 @@
         "capability_evaluated",
         "action_rejected",
         "action_confirmed",
-        "action_executed"
+        "action_executed",
+        "ui_tree_snapshot_submitted"
       ]
     },
     "capability": {

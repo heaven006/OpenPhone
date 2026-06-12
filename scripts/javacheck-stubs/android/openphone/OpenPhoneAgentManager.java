@@ -52,4 +52,12 @@ public final class OpenPhoneAgentManager {
     public String getAuditLog(int maxEvents) {
         throw new UnsupportedOperationException("compile-check stub");
     }
+
+    public String submitUiTreeSnapshot(String snapshotJson) {
+        throw new UnsupportedOperationException("compile-check stub");
+    }
+
+    public String getUiTreeSnapshot() {
+        throw new UnsupportedOperationException("compile-check stub");
+    }
 }

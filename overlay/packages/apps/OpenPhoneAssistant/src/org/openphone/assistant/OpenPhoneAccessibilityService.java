@@ -5,8 +5,10 @@ import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.ComponentName;
 import android.content.Context;
 import android.graphics.Rect;
+import android.openphone.OpenPhoneAgentManager;
 import android.provider.Settings;
 import android.text.InputType;
+import android.util.Log;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.view.accessibility.AccessibilityEvent;
@@ -148,13 +150,29 @@ public final class OpenPhoneAccessibilityService extends AccessibilityService {
             if (snapshot.getJSONArray("interactive_elements").length() == 0) {
                 snapshot.getJSONArray("risk_flags").put("interactive_elements_empty");
             }
+            final String snapshotString = snapshot.toString();
             synchronized (sLock) {
-                sLastSnapshot = snapshot.toString();
+                sLastSnapshot = snapshotString;
             }
+            // Submit to the framework so getScreenContext can serve a fresh,
+            // permission-gated UI tree to other privileged consumers without
+            // each one binding the accessibility service directly.
+            submitToFramework(snapshotString);
         } catch (JSONException e) {
             synchronized (sLock) {
                 sLastSnapshot = unavailableSnapshot("json_error");
             }
+        }
+    }
+
+    private void submitToFramework(String snapshotJson) {
+        try {
+            OpenPhoneAgentManager manager = getSystemService(OpenPhoneAgentManager.class);
+            if (manager != null) {
+                manager.submitUiTreeSnapshot(snapshotJson);
+            }
+        } catch (RuntimeException e) {
+            Log.w("OpenPhoneA11y", "submitUiTreeSnapshot failed", e);
         }
     }
 

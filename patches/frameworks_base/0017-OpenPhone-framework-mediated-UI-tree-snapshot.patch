@@ -1,0 +1,259 @@
+From 605c44982c091505046c6cce4abaecfc5aecf591 Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Fri, 12 Jun 2026 09:08:25 +0000
+Subject: [PATCH] OpenPhone: framework-mediated UI tree snapshot path
+
+The accessibility-derived UI tree snapshot is now submitted to
+system_server through a binder method (submitUiTreeSnapshot) gated
+by a SUBMIT_UI_TREE_SNAPSHOT signature permission. The framework
+caches it with a 30-second TTL and merges visible_text plus
+interactive_elements into getScreenContext output (gated by
+READ_SCREEN_CONTEXT) so privileged consumers no longer need to
+bind the assistant accessibility service directly. A
+ui_tree_snapshot_submitted audit event records each producer
+write into the hash-chained audit log.
+
+Change-Id: I9e0f3a5b7283041a5b6c7d8e9f0a1b2c3d4e5f60
+---
+ .../openphone/IOpenPhoneAgentService.aidl     |   2 +
+ .../openphone/OpenPhoneAgentManager.java      |  32 +++++
+ core/res/AndroidManifest.xml                  |   4 +
+ .../OpenPhoneAgentManagerService.java         | 127 +++++++++++++++++-
+ 4 files changed, 163 insertions(+), 2 deletions(-)
+
+diff --git a/core/java/android/openphone/IOpenPhoneAgentService.aidl b/core/java/android/openphone/IOpenPhoneAgentService.aidl
+index d4d461630942..45bc216cccbe 100644
+--- a/core/java/android/openphone/IOpenPhoneAgentService.aidl
++++ b/core/java/android/openphone/IOpenPhoneAgentService.aidl
+@@ -13,4 +13,6 @@ interface IOpenPhoneAgentService {
+     String confirmAction(String pendingActionId, boolean approved);
+     String evaluateCapability(String capabilityId);
+     String getAuditLog(int maxEvents);
++    String submitUiTreeSnapshot(String snapshotJson);
++    String getUiTreeSnapshot();
+ }
+diff --git a/core/java/android/openphone/OpenPhoneAgentManager.java b/core/java/android/openphone/OpenPhoneAgentManager.java
+index 94f3e2220eae..e34f8a6c2aef 100644
+--- a/core/java/android/openphone/OpenPhoneAgentManager.java
++++ b/core/java/android/openphone/OpenPhoneAgentManager.java
+@@ -144,4 +144,36 @@ public final class OpenPhoneAgentManager {
+             throw e.rethrowFromSystemServer();
+         }
+     }
++
++    /**
++     * Submit a UI tree snapshot from a privileged producer (the OpenPhone
++     * accessibility service). Requires the SUBMIT_UI_TREE_SNAPSHOT signature
++     * permission; the framework caches the snapshot with a TTL so callers of
++     * {@link #getScreenContext(String)} get a fresh, validated view.
++     *
++     * @hide
++     */
++    @NonNull
++    public String submitUiTreeSnapshot(@NonNull String snapshotJson) {
++        try {
++            return mService.submitUiTreeSnapshot(snapshotJson);
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
++
++    /**
++     * Read the latest UI tree snapshot held by the framework, or {@code null}
++     * if no producer has submitted within the TTL. Requires READ_SCREEN_CONTEXT.
++     *
++     * @hide
++     */
++    @NonNull
++    public String getUiTreeSnapshot() {
++        try {
++            return mService.getUiTreeSnapshot();
++        } catch (RemoteException e) {
++            throw e.rethrowFromSystemServer();
++        }
++    }
+ }
+diff --git a/core/res/AndroidManifest.xml b/core/res/AndroidManifest.xml
+index 02db52bb4869..4e28cdfe3d26 100644
+--- a/core/res/AndroidManifest.xml
++++ b/core/res/AndroidManifest.xml
+@@ -49,6 +49,10 @@
+     <permission
+         android:name="org.openphone.permission.USE_ASSISTANT_DATA"
+         android:protectionLevel="signature" />
++    <!-- @hide Allows OpenPhone privileged producers to submit a UI tree snapshot. -->
++    <permission
++        android:name="org.openphone.permission.SUBMIT_UI_TREE_SNAPSHOT"
++        android:protectionLevel="signature" />
+ 
+     <!-- ================================================ -->
+     <!-- Special broadcasts that only the system can send -->
+diff --git a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+index d04e9fb1b99e..13fef2139397 100644
+--- a/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
++++ b/services/core/java/com/android/server/openphone/OpenPhoneAgentManagerService.java
+@@ -82,6 +82,12 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             "org.openphone.permission.MANAGE_AGENT_TASKS";
+     private static final String PERMISSION_READ_AGENT_AUDIT_LOG =
+             "org.openphone.permission.READ_AGENT_AUDIT_LOG";
++    private static final String PERMISSION_SUBMIT_UI_TREE_SNAPSHOT =
++            "org.openphone.permission.SUBMIT_UI_TREE_SNAPSHOT";
++    // UI tree snapshots are short-lived; if no producer has submitted within
++    // this TTL the framework returns an empty payload rather than serving
++    // stale UI to the model.
++    private static final long UI_TREE_SNAPSHOT_TTL_MS = 30_000L;
+     private static final String OPENPHONE_SYSTEM_DIR = "openphone";
+     private static final String AUDIT_LOG_FILE = "audit-log.json";
+     // Tamper-evident audit log: each event carries a monotonically
+@@ -127,6 +133,10 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+         private final ArrayDeque<String> mPointerEvents = new ArrayDeque<>(MAX_AUDIT_EVENTS);
+         private final Object mPendingActionLock = new Object();
+         private final Map<String, PendingAction> mPendingActions = new HashMap<>();
++        private final Object mUiTreeLock = new Object();
++        private String mUiTreeSnapshot = "";
++        private long mUiTreeSnapshotElapsedMs = 0L;
++        private int mUiTreeSnapshotProducerUid = 0;
+         private final String mBootId = UUID.randomUUID().toString();
+         private long mAuditSeq = 0L;
+         private String mAuditChainHead = AUDIT_GENESIS_HASH;
+@@ -268,6 +278,88 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return result;
+         }
+ 
++        @Override
++        public String submitUiTreeSnapshot(String snapshotJson) {
++            mContext.enforceCallingOrSelfPermission(
++                    PERMISSION_SUBMIT_UI_TREE_SNAPSHOT,
++                    "OpenPhone UI tree submit requires SUBMIT_UI_TREE_SNAPSHOT");
++            final int callerUid = Binder.getCallingUid();
++            final String clean = snapshotJson == null ? "" : snapshotJson;
++            // Validate that the payload at least parses as JSON before caching;
++            // a malformed string should not poison getScreenContext().
++            try {
++                new JSONObject(clean);
++            } catch (JSONException e) {
++                return errorJson("invalid_snapshot_json");
++            }
++            final long now;
++            synchronized (mUiTreeLock) {
++                mUiTreeSnapshot = clean;
++                mUiTreeSnapshotElapsedMs = SystemClock.elapsedRealtime();
++                mUiTreeSnapshotProducerUid = callerUid;
++                now = mUiTreeSnapshotElapsedMs;
++            }
++            recordAudit("ui_tree_snapshot_submitted", null, "screen.read.visible",
++                    "allow_task_scoped", null,
++                    "producer_uid=" + callerUid + " bytes=" + clean.length());
++            try {
++                return new JSONObject()
++                        .put("accepted", true)
++                        .put("submitted_elapsed_ms", now)
++                        .put("bytes", clean.length())
++                        .toString();
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++        }
++
++        @Override
++        public String getUiTreeSnapshot() {
++            enforceReadScreenContext();
++            final String snapshot;
++            final long age;
++            final int producer;
++            synchronized (mUiTreeLock) {
++                if (mUiTreeSnapshotElapsedMs == 0L) {
++                    return emptyUiTreeSnapshot("never_submitted");
++                }
++                age = SystemClock.elapsedRealtime() - mUiTreeSnapshotElapsedMs;
++                if (age > UI_TREE_SNAPSHOT_TTL_MS) {
++                    return emptyUiTreeSnapshot("stale_ttl_ms=" + age);
++                }
++                snapshot = mUiTreeSnapshot;
++                producer = mUiTreeSnapshotProducerUid;
++            }
++            try {
++                return new JSONObject()
++                        .put("snapshot", new JSONObject(snapshot))
++                        .put("age_ms", age)
++                        .put("producer_uid", producer)
++                        .toString();
++            } catch (JSONException e) {
++                return emptyUiTreeSnapshot("snapshot_parse_failed");
++            }
++        }
++
++        private static String emptyUiTreeSnapshot(String reason) {
++            try {
++                return new JSONObject()
++                        .put("snapshot", JSONObject.NULL)
++                        .put("reason", reason)
++                        .toString();
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++        }
++
++        private static String errorJson(String error) {
++            try {
++                return new JSONObject().put("error", error).toString();
++            } catch (JSONException e) {
++                throw new IllegalStateException(e);
++            }
++        }
++
+         @Override
+         public String getAuditLog(int maxEvents) {
+             enforceReadAuditLog();
+@@ -329,6 +421,23 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+             return activeTaskIds;
+         }
+ 
++        private JSONObject freshUiTreeSnapshot() {
++            synchronized (mUiTreeLock) {
++                if (mUiTreeSnapshotElapsedMs == 0L) {
++                    return null;
++                }
++                final long age = SystemClock.elapsedRealtime() - mUiTreeSnapshotElapsedMs;
++                if (age > UI_TREE_SNAPSHOT_TTL_MS) {
++                    return null;
++                }
++                try {
++                    return new JSONObject(mUiTreeSnapshot);
++                } catch (JSONException e) {
++                    return null;
++                }
++            }
++        }
++
+         private String screenContextJson(String taskId) {
+             JSONObject json = new JSONObject();
+             try {
+@@ -344,8 +453,22 @@ public final class OpenPhoneAgentManagerService extends SystemService {
+                 json.put("activity", focusedComponent == null
+                         ? JSONObject.NULL : focusedComponent.flattenToShortString());
+                 json.put("visible_activities", visibleActivitiesJson(visibleActivities));
+-                json.put("visible_text", new JSONArray());
+-                json.put("interactive_elements", new JSONArray());
++                final JSONObject uiTree = freshUiTreeSnapshot();
++                if (uiTree != null) {
++                    json.put("visible_text", uiTree.optJSONArray("visible_text") == null
++                            ? new JSONArray() : uiTree.getJSONArray("visible_text"));
++                    json.put("interactive_elements",
++                            uiTree.optJSONArray("interactive_elements") == null
++                                    ? new JSONArray()
++                                    : uiTree.getJSONArray("interactive_elements"));
++                    json.put("ui_tree_age_ms",
++                            SystemClock.elapsedRealtime() - mUiTreeSnapshotElapsedMs);
++                    json.put("ui_tree_source", "framework_cached_snapshot");
++                } else {
++                    json.put("visible_text", new JSONArray());
++                    json.put("interactive_elements", new JSONArray());
++                    json.put("ui_tree_source", "framework_cached_snapshot_unavailable");
++                }
+                 json.put("notifications", new JSONArray());
+                 json.put("risk_flags", screenContextRiskFlags(visibleActivities));
+                 json.put("source", "system_server.activity_task_manager");
+-- 
+2.43.0
+
