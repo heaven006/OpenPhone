@@ -1407,8 +1407,19 @@ public class AssistantActivityBackend extends ComponentActivity {
     private void updateIsland(String text) {
         String status = text == null || text.isEmpty() ? "OpenPhone is ready" : text;
         String islandState = islandStateForStatus(status);
+        // Always let terminal-state transitions through, even when no task is
+        // active. Without this, postOneShotReply (which clears mAgentThread
+        // and mActiveTaskId before calling updateIsland) leaves the island
+        // stuck in its last running state — glow keeps pulsing, "Stop" stays
+        // up — because the gate below would refuse the answer_ready / idle
+        // / error transition that's supposed to dismiss it.
+        boolean isTerminal = "answer_ready".equals(islandState)
+                || "idle".equals(islandState)
+                || "error".equals(islandState)
+                || "needs_review".equals(islandState);
         if (mPointerOverlayController != null && islandState != null
-                && (mIslandVoiceLaunch || mActiveTaskId != null || mAgentThread != null)) {
+                && (isTerminal || mIslandVoiceLaunch
+                        || mActiveTaskId != null || mAgentThread != null)) {
             mPointerOverlayController.setIslandState(islandState, status);
         }
         if (mComposeStateCallbacks != null) {
