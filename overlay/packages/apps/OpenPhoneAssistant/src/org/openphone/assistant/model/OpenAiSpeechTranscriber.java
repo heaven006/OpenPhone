@@ -20,7 +20,10 @@ public final class OpenAiSpeechTranscriber {
     private static final int SAMPLE_RATE = 16000;
     private static final int MIN_RECORD_MILLIS = 900;
     private static final int INITIAL_SPEECH_TIMEOUT_MILLIS = 4500;
-    private static final int END_SILENCE_MILLIS = 1100;
+    // Mid-sentence pauses are often 1.2 — 1.6s. 1100ms was cutting people off
+    // mid-thought; 1700ms still feels responsive but lets natural pauses
+    // through.
+    private static final int END_SILENCE_MILLIS = 1700;
     private static final int SPEECH_RMS_THRESHOLD = 900;
 
     private final ModelEndpointConfig mEndpointConfig;

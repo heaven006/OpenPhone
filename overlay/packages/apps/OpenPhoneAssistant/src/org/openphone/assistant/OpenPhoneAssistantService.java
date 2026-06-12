@@ -111,6 +111,19 @@ public final class OpenPhoneAssistantService extends Service {
     public void onCreate() {
         super.onCreate();
         mPointerOverlayController = new PointerOverlayController(this, this::answerScreenInOverlay);
+        mPointerOverlayController.setConfirmationHandler(new PointerOverlayController.ConfirmationHandler() {
+            @Override
+            public void approve() {
+                AssistantActivityBackend.confirmPendingFromOverlay(
+                        OpenPhoneAssistantService.this, true);
+            }
+
+            @Override
+            public void deny() {
+                AssistantActivityBackend.confirmPendingFromOverlay(
+                        OpenPhoneAssistantService.this, false);
+            }
+        });
         refreshIslandAutonomy();
         mAgentManager = getSystemService(OpenPhoneAgentManager.class);
         OpenPhoneNotificationListenerService.ensureEnabled(this);

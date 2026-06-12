@@ -1,6 +1,7 @@
 package org.openphone.assistant;
 
 import android.Manifest;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -69,9 +70,34 @@ public class AssistantActivityBackend extends ComponentActivity {
             "org.openphone.assistant.extra.STOP_AGENT";
     static final String EXTRA_TOGGLE_AGENT =
             "org.openphone.assistant.extra.TOGGLE_AGENT";
+    static final String EXTRA_CONFIRM_APPROVE =
+            "org.openphone.assistant.extra.CONFIRM_APPROVE";
+    static final String EXTRA_CONFIRM_DENY =
+            "org.openphone.assistant.extra.CONFIRM_DENY";
+
+    /**
+     * Called from the system overlay (PointerOverlayController inline
+     * Approve/Deny). Routes through AgentControlActivity so the live activity
+     * state with mPendingActionId can fulfil the confirmation.
+     */
+    public static void confirmPendingFromOverlay(Context context, boolean approved) {
+        Intent intent = new Intent(context, AgentControlActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        intent.putExtra(approved ? EXTRA_CONFIRM_APPROVE : EXTRA_CONFIRM_DENY, true);
+        try {
+            context.startActivity(intent);
+        } catch (RuntimeException ignored) {
+        }
+    }
 
     private static final int REQUEST_RECORD_AUDIO = 1001;
-    private static final int VOICE_CAPTURE_MILLIS = 12000;
+    // Cap is a safety net; the transcriber stops earlier on speech-end silence
+    // (END_SILENCE_MILLIS in OpenAiSpeechTranscriber). Bumped from 12s — long
+    // questions about a screen ("Can you see what I'm looking at and tell me…")
+    // were hitting the cap mid-sentence.
+    private static final int VOICE_CAPTURE_MILLIS = 30000;
     private static final String PREFS = "openphone_assistant";
     private static final String PREF_GRANT_INPUT = "grant_input";
     private static final String PREF_GRANT_SCREEN_CAPTURE = "grant_screen_capture";
@@ -235,6 +261,34 @@ public class AssistantActivityBackend extends ComponentActivity {
                 @Override
                 public void run() {
                     stopTask();
+                    moveTaskToBack(true);
+                }
+            });
+        }
+        if (intent.getBooleanExtra(EXTRA_CONFIRM_APPROVE, false)) {
+            postToUi(new Runnable() {
+                @Override
+                public void run() {
+                    AssistantActivityBackend runner = sActiveControlRunner;
+                    if (runner != null) {
+                        runner.confirmPending(true);
+                    } else {
+                        confirmPending(true);
+                    }
+                    moveTaskToBack(true);
+                }
+            });
+        }
+        if (intent.getBooleanExtra(EXTRA_CONFIRM_DENY, false)) {
+            postToUi(new Runnable() {
+                @Override
+                public void run() {
+                    AssistantActivityBackend runner = sActiveControlRunner;
+                    if (runner != null) {
+                        runner.confirmPending(false);
+                    } else {
+                        confirmPending(false);
+                    }
                     moveTaskToBack(true);
                 }
             });
@@ -890,6 +944,10 @@ public class AssistantActivityBackend extends ComponentActivity {
                         appendConversation("OpenPhone", reply);
                         setTaskText("OpenPhone is ready.");
                         updateIsland("Ready");
+                        if (reply != null && !reply.trim().isEmpty()
+                                && mPointerOverlayController != null) {
+                            mPointerOverlayController.showReply(reply);
+                        }
                         updateComposerActionButton();
                     }
                 });
@@ -999,6 +1057,9 @@ public class AssistantActivityBackend extends ComponentActivity {
         appendConversation("OpenPhone", reply);
         setTaskText("OpenPhone is ready.");
         updateIsland("Ready");
+        if (mPointerOverlayController != null) {
+            mPointerOverlayController.showReply(reply);
+        }
         updateComposerActionButton();
     }
 
@@ -1121,6 +1182,11 @@ public class AssistantActivityBackend extends ComponentActivity {
                 appendConversation("OpenPhone", reply);
                 setTaskText("OpenPhone is ready.");
                 updateIsland(islandStatus);
+                if (reply != null && !reply.trim().isEmpty()
+                        && mPointerOverlayController != null
+                        && "Done".equals(islandStatus)) {
+                    mPointerOverlayController.showReply(reply);
+                }
                 updateComposerActionButton();
                 refreshAudit();
             }
@@ -1223,6 +1289,10 @@ public class AssistantActivityBackend extends ComponentActivity {
                         appendConversation("OpenPhone", reply);
                         setTaskText("OpenPhone is ready.");
                         updateIsland("Done");
+                        if (reply != null && !reply.trim().isEmpty()
+                                && mPointerOverlayController != null) {
+                            mPointerOverlayController.showReply(reply);
+                        }
                         updateComposerActionButton();
                     }
                 });
@@ -1329,6 +1399,10 @@ public class AssistantActivityBackend extends ComponentActivity {
                         appendConversation("OpenPhone", reply);
                         setTaskText("OpenPhone is ready.");
                         updateIsland("Ready");
+                        if (reply != null && !reply.trim().isEmpty()
+                                && mPointerOverlayController != null) {
+                            mPointerOverlayController.showReply(reply);
+                        }
                         updateComposerActionButton();
                     }
                 });
@@ -1775,17 +1849,22 @@ public class AssistantActivityBackend extends ComponentActivity {
                         showConfirmationIfNeeded(result);
                         boolean finished = result.contains("\"status\":\"task.finished\"")
                                 || result.contains("\"status\": \"task.finished\"");
-                        appendConversation("OpenPhone", finished
-                                ? taskFinishedMessage(result) : agentResultForDisplay(result));
+                        String displayReply = finished
+                                ? taskFinishedMessage(result) : agentResultForDisplay(result);
+                        appendConversation("OpenPhone", displayReply);
                         recordContextAgentEvent(finished
                                         ? "assistant.agent.task_finished"
                                         : "assistant.agent.task_needs_review",
                                 finished ? "Agent task finished" : "Agent task needs review",
-                                finished ? taskFinishedMessage(result)
-                                        : agentResultForDisplay(result),
+                                displayReply,
                                 taskId, result);
                         updateIsland(finished
                                 ? "Done" : "Needs review");
+                        if (finished && displayReply != null
+                                && !displayReply.trim().isEmpty()
+                                && mPointerOverlayController != null) {
+                            mPointerOverlayController.showReply(displayReply);
+                        }
                         refreshAudit();
                     }
                 });
@@ -1944,6 +2023,11 @@ public class AssistantActivityBackend extends ComponentActivity {
                     mPendingActionId == null ? "" : mPendingActionId,
                     mPendingToolName == null ? "" : mPendingToolName,
                     confirmationText);
+        }
+        // Pass the actual confirmation text so the inline Approve/Deny island
+        // shows what's being approved instead of generic "Approval needed".
+        if (mPointerOverlayController != null) {
+            mPointerOverlayController.setIslandState("needs_review", confirmationText);
         }
         updateIsland("Approval needed");
     }

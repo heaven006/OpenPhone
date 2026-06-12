@@ -1,7 +1,9 @@
 package org.openphone.assistant;
 
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.Intent;
+import android.view.animation.PathInterpolator;
 import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -38,10 +40,26 @@ public final class PointerOverlayController {
         void onAnswer(String answer);
     }
 
+    interface ConfirmationHandler {
+        void approve();
+        void deny();
+    }
+
     private static final int CURSOR_SIZE = 34;
     private static final int RIPPLE_SIZE = 96;
     private static final int ISLAND_WIDTH = 620;
     private static final int ISLAND_HEIGHT = 96;
+    // Expanded reply island grows downward from below the camera punch-hole,
+    // so wrapped multi-line text never paints behind the camera.
+    private static final int ISLAND_EXPANDED_WIDTH = 940;
+    private static final int ISLAND_EXPANDED_MIN_HEIGHT = 140;
+    private static final int ISLAND_EXPANDED_MAX_HEIGHT = 520;
+    private static final int ISLAND_EXPANDED_PADDING_VERTICAL = 28;
+    private static final int ISLAND_EXPANDED_PADDING_HORIZONTAL = 36;
+    private static final int ISLAND_EXPANDED_TOP_OFFSET = 168;
+    private static final long ISLAND_RESIZE_MS = 220L;
+    private static final long REPLY_AUTO_COLLAPSE_MS = 7000L;
+    private static final int REPLY_MAX_LINES = 8;
     private static final int CAMERA_RESERVED_WIDTH = 134;
     private static final int CAMERA_ISLAND_FALLBACK_TOP = 8;
     private static final int ACTION_LABEL_GAP = 12;
@@ -62,6 +80,7 @@ public final class PointerOverlayController {
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private final Runnable mWatchdogHide = this::hide;
     private final ScreenAnswerProvider mScreenAnswerProvider;
+    private ConfirmationHandler mConfirmationHandler;
     private WindowManager mWindowManager;
     private FrameLayout mRoot;
     private FrameLayout mIslandRoot;
@@ -72,6 +91,12 @@ public final class PointerOverlayController {
     private View mDot;
     private TextView mLeftIslandText;
     private TextView mRightIslandText;
+    private LinearLayout mIslandCompactRow;
+    private LinearLayout mIslandExpandedColumn;
+    private TextView mIslandBodyText;
+    private LinearLayout mIslandActionRow;
+    private TextView mApproveButton;
+    private TextView mDenyButton;
     private TextView mSheetStatusText;
     private LinearLayout mSheetActionRows;
     private TextView mActionLabel;
@@ -81,8 +106,15 @@ public final class PointerOverlayController {
     private String mMode = "idle";
     private String mStateDetail = "";
     private String mTranscriptText = "";
+    private String mReplyText = "";
     private boolean mYoloActive;
     private int mWatchingCount;
+    private final Runnable mReplyAutoCollapse = () -> {
+        if ("reply".equals(mMode) || "transcript".equals(mMode)) {
+            showMicButtonNow();
+        }
+    };
+    private ValueAnimator mIslandResizeAnimator;
 
     PointerOverlayController(Context context) {
         this(context, null);
@@ -94,6 +126,11 @@ public final class PointerOverlayController {
         synchronized (sControllers) {
             sControllers.add(this);
         }
+    }
+
+    /** Wire the inline Approve/Deny buttons in the expanded needs_review island. */
+    void setConfirmationHandler(ConfirmationHandler handler) {
+        mConfirmationHandler = handler;
     }
 
     void show(String taskId) {
@@ -110,6 +147,11 @@ public final class PointerOverlayController {
     void hide() {
         mHandler.post(() -> {
             mHandler.removeCallbacks(mWatchdogHide);
+            mHandler.removeCallbacks(mReplyAutoCollapse);
+            if (mIslandResizeAnimator != null) {
+                mIslandResizeAnimator.cancel();
+                mIslandResizeAnimator = null;
+            }
             if (mWindowManager == null) {
                 return;
             }
@@ -130,6 +172,8 @@ public final class PointerOverlayController {
             mGlowView = null;
             mLeftIslandText = null;
             mRightIslandText = null;
+            mIslandCompactRow = null;
+            mIslandBodyText = null;
             mSheetStatusText = null;
             mSheetActionRows = null;
             mActionLabel = null;
@@ -226,10 +270,33 @@ public final class PointerOverlayController {
         mHandler.post(() -> {
             mMode = "transcript";
             mTranscriptText = transcript == null ? "" : transcript.trim();
+            mReplyText = "";
             ensurePointerLayer();
             hidePointerDot();
             ensureIslandWindow();
             updateIslandViews();
+        });
+    }
+
+    /**
+     * Show the assistant's reply text in an expanded multi-line island.
+     * Auto-collapses to mic after {@link #REPLY_AUTO_COLLAPSE_MS}; tap the
+     * island to extend (the existing tap handler launches the full chat).
+     */
+    void showReply(String reply) {
+        final String clean = reply == null ? "" : reply.trim();
+        if (clean.isEmpty()) {
+            return;
+        }
+        mHandler.post(() -> {
+            mMode = "reply";
+            mReplyText = clean;
+            removeAllPointerLayers();
+            ensureIslandWindow();
+            updateIslandViews();
+            mHandler.removeCallbacks(mReplyAutoCollapse);
+            mHandler.postDelayed(mReplyAutoCollapse, REPLY_AUTO_COLLAPSE_MS);
+            mHandler.removeCallbacks(mWatchdogHide);
         });
     }
 
@@ -240,11 +307,13 @@ public final class PointerOverlayController {
     private void showMicButtonNow() {
         mMode = mWatchingCount > 0 ? "watching" : "idle";
         mTranscriptText = "";
+        mReplyText = "";
         mStateDetail = "";
         removeAllPointerLayers();
         ensureIslandWindow();
         updateIslandViews();
         mHandler.removeCallbacks(mWatchdogHide);
+        mHandler.removeCallbacks(mReplyAutoCollapse);
     }
 
     public static void publishWatchingCount(int count) {
@@ -466,6 +535,7 @@ public final class PointerOverlayController {
         mIslandRoot.addView(row, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+        mIslandCompactRow = row;
 
         mLeftIslandText = islandText();
         row.addView(mLeftIslandText, new LinearLayout.LayoutParams(0,
@@ -478,6 +548,61 @@ public final class PointerOverlayController {
         mRightIslandText = islandText();
         row.addView(mRightIslandText, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+
+        // Expanded mode: a vertical column with the wrapped body text and an
+        // optional action row (Approve/Deny in needs_review). Sits on top of
+        // the compact row, hidden in compact modes.
+        mIslandExpandedColumn = new LinearLayout(mContext);
+        mIslandExpandedColumn.setOrientation(LinearLayout.VERTICAL);
+        mIslandExpandedColumn.setGravity(Gravity.CENTER_VERTICAL);
+        mIslandExpandedColumn.setVisibility(View.GONE);
+
+        mIslandBodyText = new TextView(mContext);
+        mIslandBodyText.setTextColor(0xfff4f7f8);
+        mIslandBodyText.setTextSize(15);
+        mIslandBodyText.setTypeface(Typeface.DEFAULT);
+        mIslandBodyText.setLineSpacing(2f, 1.12f);
+        mIslandBodyText.setMaxLines(REPLY_MAX_LINES);
+        mIslandBodyText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        mIslandBodyText.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        mIslandExpandedColumn.addView(mIslandBodyText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        mIslandActionRow = new LinearLayout(mContext);
+        mIslandActionRow.setOrientation(LinearLayout.HORIZONTAL);
+        mIslandActionRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        mIslandActionRow.setVisibility(View.GONE);
+        mDenyButton = islandActionButton("Deny", 0xfff4f7f8, 0x33ffffff);
+        mDenyButton.setOnClickListener(v -> {
+            if (mConfirmationHandler != null) {
+                mConfirmationHandler.deny();
+            }
+        });
+        mApproveButton = islandActionButton("Approve", 0xff101418, 0xff20e36a);
+        mApproveButton.setOnClickListener(v -> {
+            if (mConfirmationHandler != null) {
+                mConfirmationHandler.approve();
+            }
+        });
+        LinearLayout.LayoutParams denyLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        denyLp.rightMargin = 12;
+        mIslandActionRow.addView(mDenyButton, denyLp);
+        mIslandActionRow.addView(mApproveButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams actionRowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        actionRowLp.topMargin = 14;
+        mIslandExpandedColumn.addView(mIslandActionRow, actionRowLp);
+
+        FrameLayout.LayoutParams expandedColumnParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT);
+        mIslandRoot.addView(mIslandExpandedColumn, expandedColumnParams);
 
         mIslandParams = new WindowManager.LayoutParams(
                 ISLAND_WIDTH,
@@ -499,6 +624,8 @@ public final class PointerOverlayController {
             mIslandParams = null;
             mLeftIslandText = null;
             mRightIslandText = null;
+            mIslandCompactRow = null;
+            mIslandBodyText = null;
         }
     }
 
@@ -724,6 +851,10 @@ public final class PointerOverlayController {
 
     private void removeIslandNow() {
         mHandler.removeCallbacks(mWatchdogHide);
+        if (mIslandResizeAnimator != null) {
+            mIslandResizeAnimator.cancel();
+            mIslandResizeAnimator = null;
+        }
         if (mWindowManager == null) {
             mWindowManager = mContext.getSystemService(WindowManager.class);
         }
@@ -745,6 +876,8 @@ public final class PointerOverlayController {
         mGlowView = null;
         mLeftIslandText = null;
         mRightIslandText = null;
+        mIslandCompactRow = null;
+        mIslandBodyText = null;
         mActionLabel = null;
     }
 
@@ -792,8 +925,17 @@ public final class PointerOverlayController {
     }
 
     private void updateIslandViews() {
-        if (mLeftIslandText == null || mRightIslandText == null) {
+        if (mLeftIslandText == null || mRightIslandText == null
+                || mIslandBodyText == null) {
             return;
+        }
+        boolean expanded = "reply".equals(mMode)
+                || "needs_review".equals(mMode)
+                || ("transcript".equals(mMode) && hasMultiLineTranscript());
+        if (expanded) {
+            applyExpandedIslandLayout();
+        } else {
+            applyCompactIslandLayout();
         }
         if ("answer_ready".equals(mMode)) {
             mLeftIslandText.setText("OK");
@@ -804,9 +946,15 @@ public final class PointerOverlayController {
             mRightIslandText.setText("Stop");
             mRightIslandText.setTextColor(0xffff6b6b);
         } else if ("transcript".equals(mMode)) {
-            mLeftIslandText.setText("You said");
-            mRightIslandText.setText(mTranscriptText == null ? "" : mTranscriptText);
-            mRightIslandText.setTextColor(0xfff4f7f8);
+            if (expanded) {
+                mIslandBodyText.setText(mTranscriptText == null ? "" : mTranscriptText);
+            } else {
+                mLeftIslandText.setText("You said");
+                mRightIslandText.setText(mTranscriptText == null ? "" : mTranscriptText);
+                mRightIslandText.setTextColor(0xfff4f7f8);
+            }
+        } else if ("reply".equals(mMode)) {
+            mIslandBodyText.setText(mReplyText == null ? "" : mReplyText);
         } else if ("thinking".equals(mMode)) {
             mLeftIslandText.setText(yoloPrefix() + "Thinking");
             mRightIslandText.setText("…");
@@ -816,9 +964,9 @@ public final class PointerOverlayController {
             mRightIslandText.setText("Stop");
             mRightIslandText.setTextColor(0xffff6b6b);
         } else if ("needs_review".equals(mMode)) {
-            mLeftIslandText.setText("Review");
-            mRightIslandText.setText("!");
-            mRightIslandText.setTextColor(0xffffd166);
+            String body = mStateDetail == null || mStateDetail.isEmpty()
+                    ? "Approval needed" : mStateDetail;
+            mIslandBodyText.setText(body);
         } else if ("error".equals(mMode)) {
             mLeftIslandText.setText("Error");
             mRightIslandText.setText("!");
@@ -836,6 +984,117 @@ public final class PointerOverlayController {
         if (mSheetRoot != null) {
             updateAiSheetViews(mSheetExpanded);
         }
+    }
+
+    private boolean hasMultiLineTranscript() {
+        return mTranscriptText != null && mTranscriptText.length() > 28;
+    }
+
+    private void applyCompactIslandLayout() {
+        if (mIslandCompactRow == null || mIslandExpandedColumn == null) {
+            return;
+        }
+        mIslandCompactRow.setVisibility(View.VISIBLE);
+        mIslandExpandedColumn.setVisibility(View.GONE);
+        if (mIslandActionRow != null) {
+            mIslandActionRow.setVisibility(View.GONE);
+        }
+        if (mIslandRoot != null) {
+            mIslandRoot.setPadding(10, 0, 10, 0);
+        }
+        animateIslandTo(ISLAND_WIDTH, ISLAND_HEIGHT, CAMERA_ISLAND_FALLBACK_TOP);
+    }
+
+    private void applyExpandedIslandLayout() {
+        if (mIslandCompactRow == null || mIslandExpandedColumn == null) {
+            return;
+        }
+        mIslandCompactRow.setVisibility(View.GONE);
+        mIslandExpandedColumn.setVisibility(View.VISIBLE);
+        if (mIslandActionRow != null) {
+            mIslandActionRow.setVisibility(
+                    "needs_review".equals(mMode) ? View.VISIBLE : View.GONE);
+        }
+        if (mIslandRoot != null) {
+            mIslandRoot.setPadding(ISLAND_EXPANDED_PADDING_HORIZONTAL,
+                    ISLAND_EXPANDED_PADDING_VERTICAL,
+                    ISLAND_EXPANDED_PADDING_HORIZONTAL,
+                    ISLAND_EXPANDED_PADDING_VERTICAL);
+        }
+        int target = measureExpandedHeight();
+        animateIslandTo(ISLAND_EXPANDED_WIDTH, target, ISLAND_EXPANDED_TOP_OFFSET);
+    }
+
+    private int measureExpandedHeight() {
+        if (mIslandExpandedColumn == null) {
+            return ISLAND_EXPANDED_MIN_HEIGHT;
+        }
+        int contentWidth = ISLAND_EXPANDED_WIDTH - ISLAND_EXPANDED_PADDING_HORIZONTAL * 2;
+        mIslandExpandedColumn.measure(
+                View.MeasureSpec.makeMeasureSpec(contentWidth, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        int columnHeight = mIslandExpandedColumn.getMeasuredHeight();
+        int target = columnHeight + ISLAND_EXPANDED_PADDING_VERTICAL * 2;
+        return Math.max(ISLAND_EXPANDED_MIN_HEIGHT,
+                Math.min(ISLAND_EXPANDED_MAX_HEIGHT, target));
+    }
+
+    private TextView islandActionButton(String label, int textColor, int backgroundColor) {
+        TextView button = new TextView(mContext);
+        button.setText(label);
+        button.setTextColor(textColor);
+        button.setTextSize(13);
+        button.setTypeface(Typeface.DEFAULT_BOLD);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(28, 14, 28, 14);
+        button.setClickable(true);
+        button.setFocusable(true);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.RECTANGLE);
+        bg.setCornerRadius(28f);
+        bg.setColor(backgroundColor);
+        button.setBackground(bg);
+        return button;
+    }
+
+    private void animateIslandTo(int targetWidth, int targetHeight, int targetTop) {
+        if (mWindowManager == null || mIslandRoot == null || mIslandParams == null) {
+            return;
+        }
+        if (mIslandResizeAnimator != null) {
+            mIslandResizeAnimator.cancel();
+            mIslandResizeAnimator = null;
+        }
+        final int startWidth = mIslandParams.width;
+        final int startHeight = mIslandParams.height;
+        final int startTop = mIslandParams.y;
+        final int startX = mIslandParams.x;
+        final int targetX = Math.max(0, (displayWidth() - targetWidth) / 2);
+        if (startWidth == targetWidth && startHeight == targetHeight
+                && startTop == targetTop && startX == targetX) {
+            return;
+        }
+        ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
+        animator.setDuration(ISLAND_RESIZE_MS);
+        // Material standard easing: starts a bit fast, settles softly.
+        animator.setInterpolator(new PathInterpolator(0.4f, 0f, 0.2f, 1f));
+        animator.addUpdateListener(a -> {
+            if (mWindowManager == null || mIslandRoot == null
+                    || mIslandParams == null) {
+                return;
+            }
+            float t = (float) a.getAnimatedValue();
+            mIslandParams.width = (int) (startWidth + (targetWidth - startWidth) * t);
+            mIslandParams.height = (int) (startHeight + (targetHeight - startHeight) * t);
+            mIslandParams.x = (int) (startX + (targetX - startX) * t);
+            mIslandParams.y = (int) (startTop + (targetTop - startTop) * t);
+            try {
+                mWindowManager.updateViewLayout(mIslandRoot, mIslandParams);
+            } catch (RuntimeException ignored) {
+            }
+        });
+        mIslandResizeAnimator = animator;
+        animator.start();
     }
 
     private String yoloPrefix() {
