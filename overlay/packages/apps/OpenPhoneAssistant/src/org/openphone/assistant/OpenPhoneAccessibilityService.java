@@ -87,7 +87,39 @@ public final class OpenPhoneAccessibilityService extends AccessibilityService {
         }
     }
 
+    /**
+     * Returns the latest UI tree snapshot. Prefers the framework's cached
+     * binder copy ({@link OpenPhoneAgentManager#getUiTreeSnapshot()}) so the
+     * call works from any process — including the assistant UI process,
+     * which since 2026-06-13 is separate from the {@code :listener} process
+     * where this accessibility service actually runs. Falls back to the
+     * local static if the framework cache is empty (no producer has
+     * submitted within the TTL yet).
+     */
     public static String snapshotJson() {
+        return snapshotJson(null);
+    }
+
+    /** Same as {@link #snapshotJson()}, but uses the supplied context to
+     *  reach the framework binder. Useful in unit tests / non-default
+     *  environments where the application context is not yet available. */
+    public static String snapshotJson(Context context) {
+        Context resolved = context != null ? context : sInstance;
+        if (resolved != null) {
+            try {
+                OpenPhoneAgentManager manager =
+                        resolved.getSystemService(OpenPhoneAgentManager.class);
+                if (manager != null) {
+                    String framework = manager.getUiTreeSnapshot();
+                    JSONObject obj = new JSONObject(framework);
+                    if (!obj.isNull("snapshot")) {
+                        return obj.getJSONObject("snapshot").toString();
+                    }
+                }
+            } catch (RuntimeException | JSONException ignored) {
+                // Fall through to local static.
+            }
+        }
         OpenPhoneAccessibilityService instance = sInstance;
         if (instance != null) {
             instance.refreshSnapshot();

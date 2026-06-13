@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.openphone.assistant"
-    android:versionCode="121"
-    android:versionName="0.1.85-dev">
+    android:versionCode="123"
+    android:versionName="0.1.87-dev">
     <uses-permission android:name="android.permission.CAPTURE_VIDEO_OUTPUT" />
     <uses-permission android:name="android.permission.CHANGE_COMPONENT_ENABLED_STATE" />
     <uses-permission android:name="android.permission.GET_TASKS" />
@@ -68,9 +68,18 @@
             android:exported="true"
             android:permission="org.openphone.permission.BIND_ASSISTANT_SERVICE" />
 
+        <!-- Process separation, first slice (2026-06-13): the
+             accessibility-derived UI tree producer and the notification
+             listener live in a dedicated :listener process. They are
+             system-bound observers that talk to system_server through
+             binders and have no UI; isolating them from the assistant UI
+             process means a UI crash cannot break the live UI-tree feed
+             that the framework's `getScreenContext` depends on, and an
+             OOM in either listener cannot tank the assistant. -->
         <service
             android:name=".OpenPhoneAccessibilityService"
             android:exported="true"
+            android:process=":listener"
             android:label="@string/app_name"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
@@ -85,6 +94,7 @@
             android:name=".OpenPhoneNotificationListenerService"
             android:directBootAware="true"
             android:exported="true"
+            android:process=":listener"
             android:label="@string/app_name"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
