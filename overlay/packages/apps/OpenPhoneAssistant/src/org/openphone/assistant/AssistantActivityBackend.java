@@ -165,6 +165,23 @@ public class AssistantActivityBackend extends ComponentActivity {
         super.onCreate(savedInstanceState);
         mAgentManager = getSystemService(OpenPhoneAgentManager.class);
         mPointerOverlayController = new PointerOverlayController(this);
+        // Wire inline Approve / Deny on the island to this activity's
+        // pending-confirmation state. The service's controller has its own
+        // handler, but the live controller during a task is the activity's,
+        // and without this hook the buttons fire onClick but find a null
+        // handler ("Approve clicked, handler=false" in logcat).
+        mPointerOverlayController.setConfirmationHandler(
+                new PointerOverlayController.ConfirmationHandler() {
+                    @Override
+                    public void approve() {
+                        runOnUiThread(() -> confirmPending(true));
+                    }
+
+                    @Override
+                    public void deny() {
+                        runOnUiThread(() -> confirmPending(false));
+                    }
+                });
         mContextIndexStore = new ContextIndexStore(this);
         mContextIndexStore.backfillChatHistoryIfNeeded();
         mActionRegistry = ActionRegistry.load();

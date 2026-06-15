@@ -443,22 +443,25 @@ public final class PointerOverlayController {
             return;
         }
         mIslandRoot = new FrameLayout(mContext);
-        mIslandRoot.setClickable(true);
+        // Important: do NOT make the FrameLayout itself clickable. When the
+        // root is clickable, ACTION_DOWN claims the gesture before children
+        // get it, so the inline Approve / Deny buttons (added later inside
+        // mIslandActionRow) never receive their click. Instead we put the
+        // tap handlers on the inner content views (compact row + body
+        // text), and the action buttons attach their own OnClickListeners.
+        mIslandRoot.setClickable(false);
         mIslandRoot.setFocusable(false);
         mIslandRoot.setBackground(chipBackground(mYoloActive));
         mIslandRoot.setPadding(10, 0, 10, 0);
-        // Use OnClick / OnLongClick rather than a blanket OnTouchListener so
-        // children inside the expanded island (Approve / Deny buttons) keep
-        // receiving their own clicks. The previous OnTouchListener returned
-        // true for every event and stole the touch from the button views.
-        mIslandRoot.setOnClickListener(view -> handleIslandTap(view));
-        mIslandRoot.setOnLongClickListener(view -> {
-            launchFullAssistant();
-            return true;
-        });
         LinearLayout row = new LinearLayout(mContext);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER);
+        row.setClickable(true);
+        row.setOnClickListener(this::handleIslandTap);
+        row.setOnLongClickListener(view -> {
+            launchFullAssistant();
+            return true;
+        });
         mIslandRoot.addView(row, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -492,6 +495,12 @@ public final class PointerOverlayController {
         mIslandBodyText.setMaxLines(REPLY_MAX_LINES);
         mIslandBodyText.setEllipsize(android.text.TextUtils.TruncateAt.END);
         mIslandBodyText.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        mIslandBodyText.setClickable(true);
+        mIslandBodyText.setOnClickListener(this::handleIslandTap);
+        mIslandBodyText.setOnLongClickListener(view -> {
+            launchFullAssistant();
+            return true;
+        });
         mIslandExpandedColumn.addView(mIslandBodyText, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
