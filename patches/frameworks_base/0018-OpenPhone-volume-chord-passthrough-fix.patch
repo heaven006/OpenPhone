@@ -1,0 +1,197 @@
+From 2d39f10fda0a6d313cc62e5d5d8d249c2c1162a0 Mon Sep 17 00:00:00 2001
+From: OpenPhone <dev@openphone.local>
+Date: Mon, 15 Jun 2026 00:21:11 +0000
+Subject: [PATCH] OpenPhone: pass-through volume keys when not chord
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The earlier interceptOpenPhoneVolumeChord swallowed every volume DOWN
+and ACTION_UP, then tried to replay single presses 750ms later via
+MediaSessionLegacyHelper. The replay path silently dropped most
+adjustments — single volume up/down were no longer changing the
+device volume at all.
+
+This rewrite passes volume events through unchanged unless the chord
+is actively triggered. Trade-off: pressing both keys nearly
+simultaneously will already have bumped the volume by one notch on
+the first key before the chord triggers. Acceptable since the chord
+is a rare ad-hoc gesture and the volume bump is recoverable.
+
+Change-Id: Ic1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0
+---
+ .../server/policy/PhoneWindowManager.java     | 144 ++++++++++++++++++
+ 1 file changed, 144 insertions(+)
+
+diff --git a/services/core/java/com/android/server/policy/PhoneWindowManager.java b/services/core/java/com/android/server/policy/PhoneWindowManager.java
+index e4cc1c73b8dc..ed5d8e356ba2 100644
+--- a/services/core/java/com/android/server/policy/PhoneWindowManager.java
++++ b/services/core/java/com/android/server/policy/PhoneWindowManager.java
+@@ -679,6 +679,18 @@ public class PhoneWindowManager implements WindowManagerPolicy {
+     boolean mVolumeUpWakeTriggered;
+     boolean mVolumeMuteWakeTriggered;
+ 
++    private static final long OPENPHONE_VOLUME_CHORD_WINDOW_MILLIS = 750;
++    private static final long OPENPHONE_VOLUME_CHORD_REARM_MILLIS = 1000;
++    private boolean mOpenPhoneVolumeUpPressed;
++    private boolean mOpenPhoneVolumeDownPressed;
++    private boolean mOpenPhoneVolumeChordTriggered;
++    private long mOpenPhoneLastVolumeUpDownTime;
++    private long mOpenPhoneLastVolumeDownDownTime;
++    private long mOpenPhoneLastVolumeChordTriggerTime;
++    private KeyEvent mOpenPhonePendingVolumeDownEvent;
++    private KeyEvent mOpenPhonePendingVolumeUpEvent;
++    private Runnable mOpenPhonePendingVolumeReplay;
++
+     boolean mVolumeAnswerCall;
+ 
+     private boolean mPendingKeyguardOccluded;
+@@ -4386,6 +4398,133 @@ public class PhoneWindowManager implements WindowManagerPolicy {
+         return false;
+     }
+ 
++    private boolean interceptOpenPhoneVolumeChord(KeyEvent event) {
++        // Pass volume events through to the system by default. We only
++        // consume them when the chord (vol-up + vol-down within the chord
++        // window) is detected, and once consumed we keep consuming the
++        // matching ACTION_UP so the system does not see half a gesture.
++        // The earlier design intercepted all events and tried to replay
++        // single presses 750ms later via MediaSessionLegacyHelper, which
++        // turned out to silently drop most volume adjustments — see
++        // commit history for the volume-chord regression.
++        final int keyCode = event.getKeyCode();
++        if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) {
++            return false;
++        }
++        final boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
++        final long now = event.getEventTime() > 0
++                ? event.getEventTime() : SystemClock.uptimeMillis();
++
++        if (down) {
++            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
++                mOpenPhoneVolumeUpPressed = true;
++                mOpenPhoneLastVolumeUpDownTime = now;
++            } else {
++                mOpenPhoneVolumeDownPressed = true;
++                mOpenPhoneLastVolumeDownDownTime = now;
++            }
++            // Chord detection: both physical volume keys held within the
++            // chord window. Trade-off: the first key will already have
++            // bumped the volume once by the time the second key arrives —
++            // acceptable since the chord is rare and recoverable.
++            if (!mOpenPhoneVolumeChordTriggered
++                    && now - mOpenPhoneLastVolumeChordTriggerTime
++                            > OPENPHONE_VOLUME_CHORD_REARM_MILLIS
++                    && isOpenPhoneVolumeChord(now)) {
++                mOpenPhoneVolumeChordTriggered = true;
++                mOpenPhoneLastVolumeChordTriggerTime = now;
++                launchOpenPhoneVolumeChordAction();
++                return true; // consume this DOWN
++            }
++            return mOpenPhoneVolumeChordTriggered; // pass through if not chord
++        }
++
++        // ACTION_UP (or cancel): only consume if we are still inside a
++        // chord-triggered burst, so the matching DOWN/UP pair is balanced.
++        final boolean consume = mOpenPhoneVolumeChordTriggered;
++        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
++            mOpenPhoneVolumeUpPressed = false;
++        } else {
++            mOpenPhoneVolumeDownPressed = false;
++        }
++        if (!mOpenPhoneVolumeUpPressed && !mOpenPhoneVolumeDownPressed) {
++            mOpenPhoneVolumeChordTriggered = false;
++        }
++        return consume;
++    }
++
++    private boolean isOpenPhoneVolumeChord(long now) {
++        if (mOpenPhoneVolumeUpPressed && mOpenPhoneVolumeDownPressed) {
++            return true;
++        }
++        if (mOpenPhoneLastVolumeUpDownTime <= 0 || mOpenPhoneLastVolumeDownDownTime <= 0) {
++            return false;
++        }
++        final long delta = Math.abs(mOpenPhoneLastVolumeUpDownTime
++                - mOpenPhoneLastVolumeDownDownTime);
++        final long newestDown = Math.max(mOpenPhoneLastVolumeUpDownTime,
++                mOpenPhoneLastVolumeDownDownTime);
++        return delta <= OPENPHONE_VOLUME_CHORD_WINDOW_MILLIS
++                && now - newestDown <= OPENPHONE_VOLUME_CHORD_WINDOW_MILLIS;
++    }
++
++    private void launchOpenPhoneVolumeChordAction() {
++        final Intent intent = new Intent();
++        intent.setComponent(new ComponentName("org.openphone.assistant",
++                "org.openphone.assistant.AgentControlActivity"));
++        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
++                | Intent.FLAG_ACTIVITY_SINGLE_TOP
++                | Intent.FLAG_ACTIVITY_NO_ANIMATION);
++        intent.putExtra("org.openphone.assistant.extra.TOGGLE_AGENT", true);
++        try {
++            startActivityAsUser(intent, UserHandle.CURRENT_OR_SELF);
++        } catch (RuntimeException e) {
++            Slog.w(TAG, "Unable to launch OpenPhone volume chord action", e);
++        }
++    }
++
++    private void replaceOpenPhonePendingVolumeEvent(KeyEvent event) {
++        clearOpenPhonePendingVolumeEvent();
++        mOpenPhonePendingVolumeDownEvent = KeyEvent.obtain(event);
++    }
++
++    private void clearOpenPhonePendingVolumeEvent() {
++        if (mOpenPhonePendingVolumeDownEvent != null) {
++            mOpenPhonePendingVolumeDownEvent.recycle();
++            mOpenPhonePendingVolumeDownEvent = null;
++        }
++        if (mOpenPhonePendingVolumeUpEvent != null) {
++            mOpenPhonePendingVolumeUpEvent.recycle();
++            mOpenPhonePendingVolumeUpEvent = null;
++        }
++        if (mOpenPhonePendingVolumeReplay != null) {
++            mHandler.removeCallbacks(mOpenPhonePendingVolumeReplay);
++            mOpenPhonePendingVolumeReplay = null;
++        }
++    }
++
++    private void scheduleOpenPhonePendingVolumeReplay(KeyEvent upEvent) {
++        if (mOpenPhonePendingVolumeUpEvent != null) {
++            mOpenPhonePendingVolumeUpEvent.recycle();
++        }
++        mOpenPhonePendingVolumeUpEvent = KeyEvent.obtain(upEvent);
++        mOpenPhonePendingVolumeReplay = this::replayOpenPhonePendingVolumeEvent;
++        mHandler.postDelayed(mOpenPhonePendingVolumeReplay,
++                OPENPHONE_VOLUME_CHORD_WINDOW_MILLIS);
++    }
++
++    private void replayOpenPhonePendingVolumeEvent() {
++        try {
++            MediaSessionLegacyHelper helper = MediaSessionLegacyHelper.getHelper(mContext);
++            helper.sendVolumeKeyEvent(mOpenPhonePendingVolumeDownEvent,
++                    AudioManager.USE_DEFAULT_STREAM_TYPE, true);
++            helper.sendVolumeKeyEvent(mOpenPhonePendingVolumeUpEvent,
++                    AudioManager.USE_DEFAULT_STREAM_TYPE, true);
++        } finally {
++            clearOpenPhonePendingVolumeEvent();
++        }
++    }
++
+     // TODO(b/117479243): handle it in InputPolicy
+     /** {@inheritDoc} */
+     @Override
+@@ -5185,6 +5324,11 @@ public class PhoneWindowManager implements WindowManagerPolicy {
+             case KeyEvent.KEYCODE_VOLUME_DOWN:
+             case KeyEvent.KEYCODE_VOLUME_UP:
+             case KeyEvent.KEYCODE_VOLUME_MUTE: {
++                if (interceptOpenPhoneVolumeChord(event)) {
++                    result &= ~ACTION_PASS_TO_USER;
++                    break;
++                }
++
+                 // Eat all down & up keys when using volume wake.
+                 // This disables volume control, music control, and "beep" on key up.
+                 if (isWakeKey && mWakeOnVolumeKeyPress) {
+-- 
+2.43.0
+
