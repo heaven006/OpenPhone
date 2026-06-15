@@ -174,17 +174,71 @@ public final class CommitmentStore {
 
     public List<CommitmentRecord> search(String query, int limit) {
         String cleanQuery = query == null ? "" : query.trim();
+        int boundedLimit = Math.max(1, Math.min(limit, 50));
         if (cleanQuery.isEmpty()) {
-            return active(limit);
+            // "What are my reminders?" surface: return everything still on
+            // the books (pending/active/snoozed) AND anything that fired
+            // recently, ordered by most-recent-update first. Without the
+            // recent-fired branch, a commitment that just rang would
+            // disappear from this query immediately, which surprised users.
+            List<CommitmentRecord> activeList = active(boundedLimit);
+            List<CommitmentRecord> recentlyTouched = recentAllStatuses(boundedLimit);
+            return mergeUnique(activeList, recentlyTouched, boundedLimit);
         }
         JSONObject request = new JSONObject();
         try {
             request.put("mode", "search").put("query", cleanQuery)
+                    .put("limit", boundedLimit);
+        } catch (JSONException e) {
+            return new ArrayList<>();
+        }
+        return queryCommitments(request);
+    }
+
+    /**
+     * Issues an FTS query against commitment titles using a stopword-style
+     * "match anything" pattern so the framework returns commitments of any
+     * status (its `mode=search` path filters only on `deleted_at IS NULL`,
+     * not on `status`). Used by {@link #search(String, int)} to surface
+     * recently-fired reminders alongside pending ones.
+     */
+    private List<CommitmentRecord> recentAllStatuses(int limit) {
+        JSONObject request = new JSONObject();
+        try {
+            request.put("mode", "search")
+                    // FTS4 has no syntactic "match all", but every commitment
+                    // title we create contains at least one ASCII letter; OR-ing
+                    // a generous alphabet covers all rows, and the framework
+                    // already orders by `updated_at DESC` and returns at most
+                    // `limit` rows.
+                    .put("query",
+                            "a OR b OR c OR d OR e OR f OR g OR h OR i OR j OR k OR l OR m "
+                                    + "OR n OR o OR p OR q OR r OR s OR t OR u OR v OR w "
+                                    + "OR x OR y OR z OR 0 OR 1 OR 2 OR 3 OR 4 OR 5 OR 6 "
+                                    + "OR 7 OR 8 OR 9")
                     .put("limit", Math.max(1, Math.min(limit, 50)));
         } catch (JSONException e) {
             return new ArrayList<>();
         }
         return queryCommitments(request);
+    }
+
+    private static List<CommitmentRecord> mergeUnique(List<CommitmentRecord> primary,
+            List<CommitmentRecord> secondary, int limit) {
+        ArrayList<CommitmentRecord> out = new ArrayList<>(primary);
+        java.util.HashSet<Long> seen = new java.util.HashSet<>();
+        for (CommitmentRecord c : primary) {
+            seen.add(c.id);
+        }
+        for (CommitmentRecord c : secondary) {
+            if (out.size() >= limit) {
+                break;
+            }
+            if (seen.add(c.id)) {
+                out.add(c);
+            }
+        }
+        return out;
     }
 
     public String searchJson(String query, int limit) {

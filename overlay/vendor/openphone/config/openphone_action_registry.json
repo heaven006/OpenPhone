@@ -1209,7 +1209,7 @@
     },
     {
       "name": "commitments.search",
-      "description": "Search active OpenPhone commitments.",
+      "description": "List or search the user's OpenPhone commitments (reminders, follow-ups, scheduled tasks). Pass query=\"\" (empty string) to get the full active list — including ones that just fired in the last day. Pass a query string ONLY when the user is asking about a specific topic (e.g. 'do I have any reminders about the dentist?'). Generic words like 'reminder', 'task', or 'commitment' are NOT good FTS queries and will return nothing — for those, use query=\"\".",
       "model_tool": "commitment_search",
       "kind": "observe",
       "input_schema_json": {
@@ -1217,7 +1217,7 @@
         "properties": {
           "query": {
             "type": "string",
-            "description": "Search query."
+            "description": "Free-text search over commitment titles. Use empty string for 'list everything'. Avoid generic terms like 'reminder' — they will not match anything because every commitment is already a reminder."
           },
           "limit": {
             "type": "integer",
