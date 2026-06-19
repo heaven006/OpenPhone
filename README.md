@@ -1,5 +1,20 @@
 # OpenPhone
 
+## License And Contributions
+
+This repository is proprietary, source-available software owned by Dafdef, inc.
+and Adam Cohen Hillel. It is not open source. Repository access is for review,
+local evaluation, and contributions only. Commercial use, redistribution,
+hosting, sublicensing, or competing use requires written permission from
+Dafdef, inc. See [LICENSE](./LICENSE).
+
+Contributions are accepted only under the contributor terms in
+[CONTRIBUTING.md](./CONTRIBUTING.md), which grant Dafdef, inc. and Adam Cohen
+Hillel broad rights to use, modify, relicense, and commercialize submitted
+contributions and make clear that contributions do not create any right to
+money, equity, shares, revenue, employment, or ownership.
+
+
 ![OpenPhone GitHub hero](docs/assets/github_hero.png)
 
 OpenPhone is an Android-based operating system project where an AI agent is a

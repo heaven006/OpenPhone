@@ -1,38 +1,42 @@
 OpenPhone License
 
-Required Notice: Copyright 2026 OpenPhone contributors.
+Required Notice: Copyright 2026 Dafdef, inc. and Adam Cohen Hillel.
+All rights reserved.
 
-OpenPhone uses a dual-license model for OpenPhone-owned materials.
+OpenPhone uses a mixed-license model because this repository may contain
+OpenPhone-owned materials together with patch files, references, build
+integration, and documentation related to Android, LineageOS, Linux, device
+trees, vendor extraction flows, and other third-party projects.
 
-1. Non-commercial license
+1. OpenPhone-Owned Materials
 
-   OpenPhone-owned materials are made available for non-commercial use under
-   the PolyForm Noncommercial License 1.0.0. See LICENSE.noncommercial.
+OpenPhone-owned materials are proprietary and source-available. They are made
+available for non-commercial use only under the PolyForm Noncommercial License
+1.0.0. See LICENSE.noncommercial.
 
-   SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+Commercial use of OpenPhone-owned materials requires a separate written
+commercial license from Dafdef, inc. See COMMERCIAL.md.
 
-2. Commercial license
+2. Upstream And Third-Party Materials
 
-   Commercial use of OpenPhone-owned materials requires a separate written
-   commercial license from the OpenPhone project owner. See COMMERCIAL.md.
+OpenPhone does not relicense materials it did not create. Upstream and
+third-party materials keep their original licenses. Apache, BSD, MIT, GPL,
+proprietary vendor blob, and other notices must be preserved according to the
+relevant upstream license.
 
-3. Upstream and third-party materials
+3. GPL-Covered Materials
 
-   This repository also contains patch files, references, build integration,
-   and documentation related to Android, LineageOS, Linux, device trees, vendor
-   extraction flows, and other third-party projects. OpenPhone does not
-   relicense materials it did not create.
+GPL-covered code and modifications remain subject to the GPL. OpenPhone does
+not add non-commercial restrictions to GPL-covered code.
 
-   Upstream and third-party materials keep their original licenses. Apache,
-   BSD, MIT, GPL, proprietary vendor blob, and other notices must be preserved
-   according to the relevant upstream license.
+4. File-Specific Overrides
 
-4. GPL-covered materials
+If a file contains a different license notice, that file-specific notice
+controls for that file.
 
-   GPL-covered code and modifications remain subject to the GPL. OpenPhone does
-   not add non-commercial restrictions to GPL-covered code.
+5. Contributions
 
-5. File-specific overrides
-
-   If a file contains a different license notice, that file-specific notice
-   controls for that file.
+All contributions are governed by CONTRIBUTING.md. By submitting a contribution,
+you agree to the contributor terms in that file. If there is a conflict between
+this license and CONTRIBUTING.md for a contribution you submit, CONTRIBUTING.md
+controls for that contribution.
