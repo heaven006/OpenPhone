@@ -43,6 +43,24 @@ consumer-ready phone OS.
 See [docs/SHOWCASE.md](docs/SHOWCASE.md) for the current demo surface and
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is still unfinished.
 
+## Use Cases
+
+OpenPhone is being built for phone-level AI workflows that need OS context,
+durable state, and mediated action:
+
+- Screen-aware help: ask what is visible, what can be tapped, or what state an
+  app is in.
+- Cross-app task execution: open apps, navigate settings, search, compose,
+  share, and complete bounded UI tasks.
+- Proactive monitoring: create watchers for future calls, messages,
+  notifications, app states, or other device events.
+- Background follow-through: keep working on queued agent runs after the
+  current chat turn ends, with visible status and review where needed.
+- Voice-first control: use a bounded regular agent session for traceable tasks
+  or realtime voice for back-and-forth demos.
+- Auditable automation: export trajectories, screenshots, actions, policy
+  decisions, and framework audit evidence for debugging and release validation.
+
 ## Why This Exists
 
 Mobile assistants built as normal apps hit the same ceiling: limited OS
@@ -197,9 +215,9 @@ OpenPhone-owned materials are source-available for non-commercial use under the
 PolyForm Noncommercial License 1.0.0. Commercial use requires a separate written
 license from Dafdef, inc.
 
-Contributions are accepted only under terms that allow Dafdef, inc. and Adam
-Cohen Hillel to own, modify, sublicense, redistribute, and commercialize the
-submitted work. See [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md),
+Contributions are accepted only under terms that allow Dafdef, inc. to own,
+modify, sublicense, redistribute, and commercialize the submitted work. See
+[.github/CONTRIBUTING.md](.github/CONTRIBUTING.md),
 [docs/legal/COMMERCIAL.md](docs/legal/COMMERCIAL.md), [LICENSE](LICENSE),
 [docs/legal/LICENSE.noncommercial](docs/legal/LICENSE.noncommercial), and
 [docs/legal/THIRD_PARTY_NOTICES.md](docs/legal/THIRD_PARTY_NOTICES.md).

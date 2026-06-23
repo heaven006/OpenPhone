@@ -8,10 +8,10 @@ comment with code, design asset, documentation change, or other contribution.
 
 ## Ownership And License
 
-OpenPhone is proprietary software and project material owned by Dafdef, inc. and
-Adam Cohen Hillel. The repository is licensed under the non-commercial
-source-available license in [LICENSE](./LICENSE), unless a file-specific or
-third-party notice says otherwise.
+OpenPhone is proprietary software and project material owned by Dafdef, inc.
+The repository is licensed under the non-commercial source-available license in
+[LICENSE](../LICENSE), unless a file-specific or third-party notice says
+otherwise.
 
 You may use repository access to review the code, run the project locally for
 development and evaluation, and propose contributions. You may not use the code
@@ -28,12 +28,12 @@ the following terms.
 ### Assignment
 
 To the fullest extent permitted by law, you hereby assign and agree to assign to
-Dafdef, inc. and Adam Cohen Hillel all right, title, and interest in and to your
-contributions, including all copyrights and other intellectual property rights.
+Dafdef, inc. all right, title, and interest in and to your contributions,
+including all copyrights and other intellectual property rights.
 
 If an assignment is not permitted by law, is ineffective, or does not apply to
-any portion of your contribution, you instead grant Dafdef, inc. and Adam Cohen
-Hillel an irrevocable, perpetual, worldwide, exclusive, transferable,
+any portion of your contribution, you instead grant Dafdef, inc. an irrevocable,
+perpetual, worldwide, exclusive, transferable,
 sublicensable, royalty-free, fully paid-up license to use, reproduce, modify,
 prepare derivative works of, publish, perform, display, distribute, host,
 commercialize, sell, license, sublicense, relicense, import, export, and
@@ -45,24 +45,24 @@ further approval.
 
 To the extent you have or later obtain patent rights that would be infringed by
 your contribution alone or by combination of your contribution with this project,
-you grant Dafdef, inc. and Adam Cohen Hillel an irrevocable, perpetual,
-worldwide, transferable, sublicensable, royalty-free, fully paid-up patent
-license to make, have made, use, sell, offer to sell, import, export, and
-otherwise transfer your contribution and this project.
+you grant Dafdef, inc. an irrevocable, perpetual, worldwide, transferable,
+sublicensable, royalty-free, fully paid-up patent license to make, have made,
+use, sell, offer to sell, import, export, and otherwise transfer your
+contribution and this project.
 
 ### Moral Rights
 
 To the fullest extent permitted by law, you waive, and agree not to assert, any
 moral rights, rights of attribution, rights of integrity, or similar rights in
-your contribution against Dafdef, inc., Adam Cohen Hillel, their affiliates,
-successors, assigns, customers, users, licensees, and sublicensees.
+your contribution against Dafdef, inc., its affiliates, successors, assigns,
+customers, users, licensees, and sublicensees.
 
 ### Relicensing And Commercial Use
 
-Dafdef, inc. and Adam Cohen Hillel may use, license, sublicense, relicense,
-commercialize, sell, host, distribute, or otherwise exploit your contribution
-without restriction, including under licenses different from this repository's
-current license, without compensation or further approval.
+Dafdef, inc. may use, license, sublicense, relicense, commercialize, sell, host,
+distribute, or otherwise exploit your contribution without restriction,
+including under licenses different from this repository's current license,
+without compensation or further approval.
 
 ### No Compensation, Equity, Or Ownership Rights
 
@@ -72,8 +72,8 @@ money, fees, royalties, revenue share, profit share, bounty, reimbursement,
 salary, wages, consulting fees, equity, stock, stock options, tokens, ownership
 interest, voting rights, governance rights, board rights, founder status,
 employment relationship, contractor relationship, partnership, joint venture, or
-other financial or ownership interest in Dafdef, inc., OpenPhone, Adam Cohen
-Hillel, or any related product, company, service, asset, or project.
+other financial or ownership interest in Dafdef, inc., OpenPhone, or any related
+product, company, service, asset, or project.
 
 No statement, merge, commit, issue discussion, roadmap discussion, repository
 access, title, role, credit, or collaboration creates any right to compensation

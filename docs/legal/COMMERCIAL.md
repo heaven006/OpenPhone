@@ -3,8 +3,7 @@
 OpenPhone-owned materials are available for non-commercial use under the
 PolyForm Noncommercial License 1.0.0.
 
-Commercial use requires a separate written commercial license from the
-OpenPhone project owner.
+Commercial use requires a separate written commercial license from Dafdef, inc.
 
 Commercial use includes, without limitation:
 
