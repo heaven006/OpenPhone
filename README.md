@@ -19,101 +19,52 @@ OpenPhone-owned Android overlay, privileged assistant app, framework patches,
 model/tool policy configuration, build scripts, device notes, contracts, and
 release tooling. It intentionally does not vendor the full Android source tree.
 
-## Current Preview
+## AI-Native Phone Runtime
 
 OpenPhone already boots on a real Pixel 9a as a LineageOS 23.2 / Android 16
-based ROM. It is still a developer preview, not a consumer-ready daily driver,
-but the core OS shape is in place: the assistant is installed as a privileged
-system component, and phone control is mediated through OpenPhone framework
-services instead of a standalone app trying to automate Android from the
-outside.
+based ROM. It is a developer preview, not a consumer-ready daily driver, but
+the core product shape is in place: the agent is a privileged system component,
+the dynamic island is its always-available activity surface, and actions are
+mediated through OpenPhone framework services instead of an app trying to
+automate Android from the outside.
 
-The assistant has a persistent system presence through the dynamic island. It
-can listen, answer, show recent conversation state, expose active watchers and
-background runs, request approval for sensitive actions, and switch between a
-bounded regular agent session and an optional realtime voice session for
-back-and-forth demos.
+The agent can read structured screen context, use model-visible phone tools,
+and operate across apps: launch, inspect, tap, scroll, type, open links, use
+clipboard/share flows, react to notifications, and work with messaging paths
+under policy. Sensitive actions are reviewable, and behavior can be inspected
+through audit logs, trajectories, screenshots, policy decisions, and release
+validators.
 
-The agent can use structured screen context and model-visible tools to operate
-the phone: launch apps, inspect the visible UI, tap, scroll, type, open links,
-use clipboard/share flows, react to notifications, and work with messaging
-paths under policy. The point is not a chat app; it is a phone-level loop that
-can observe, decide, act, and continue across app boundaries.
-
-OpenPhone also includes the beginning of a proactive phone-agent runtime. The
-agent is not limited to one-off questions: it can keep commitments, maintain
-watchers, queue background runs, and use phone context to decide when something
-needs attention. These surfaces are still early, but they are part of the OS
-layer rather than prompt-only behavior.
-
-Every serious action path is designed around review, policy, and evidence.
-OpenPhone has declarative capability registries, OS-owned data services,
-hash-chained framework audit logs, trajectory exports, and validators so agent
-behavior can be debugged, evaluated, and released with evidence.
+OpenPhone is also built for proactive work. Heartbeats quietly check whether
+anything needs attention. Scheduled jobs run exact workflows. Watchers monitor
+phone context such as missed calls, messages, notifications, foreground app
+state, visible screen state, calendar changes, location, battery, connectivity,
+and commitments the user made in conversation. Background runs keep working
+after the current chat turn, while the dynamic island shows what is running,
+why it started, what it last said, and what needs review.
 
 See [docs/SHOWCASE.md](docs/SHOWCASE.md) for the current demo surface and
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is still unfinished.
 
-## Proactive Phone Agent Runtime
-
-OpenPhone is designed for agents that do not only answer when summoned. The OS
-can wake the agent through heartbeats, scheduled jobs, and phone-context
-watchers, then route work through the same tool, policy, approval, and audit
-pipeline as a user-initiated task.
-
-- **Heartbeats** are quiet periodic checks. The agent wakes up, reviews its
-  context, and only surfaces something if it needs attention.
-- **Scheduled jobs** are exact time-based workflows such as morning briefings,
-  end-of-day summaries, recurring reminders, or periodic checks.
-- **Watchers** are event-triggered monitors for phone context: missed calls,
-  messages, notifications, foreground app state, visible screen state,
-  calendar changes, location, battery, connectivity, or commitments the user
-  made in conversation.
-- **Background runs** are the durable agent tasks created by a watcher,
-  heartbeat, schedule, or deferred request. They keep working after the current
-  chat turn ends.
-- **The dynamic island** is the activity center: it shows what is running, why
-  it started, what it last said, which watchers are active, and what needs
-  review.
-
-This makes OpenPhone closer to an always-available phone agent runtime than a
-chat assistant. It can notice, remember, follow up, and act through phone-native
-context while keeping sensitive actions reviewable and auditable.
-
 ## Use Cases
 
-- **Missed-call follow-up**: notice a missed call, identify the caller, and
-  draft or send a policy-approved response.
-- **Notification triage**: summarize important notifications and suppress
-  noise until something actually needs the user's attention.
-- **Morning briefing**: combine calendar, weather, messages, reminders, and
-  device context into a useful start-of-day update.
-- **Screen-aware help**: answer what is visible, what can be tapped, or why a
-  flow appears stuck.
-- **Cross-app execution**: open apps, navigate settings, search, compose,
-  share, and complete bounded UI tasks.
-- **Commitment tracking**: remember "I'll do that later" moments and surface
-  them when time, app, location, or conversation context makes them relevant.
-- **Background errands**: continue multi-step work after the user leaves the
-  chat, with visible run state and approval where needed.
-- **Auditable automation**: export trajectories, screenshots, actions, policy
-  decisions, and framework audit evidence for debugging and release validation.
-
-## Why This Exists
-
-Mobile assistants built as normal apps hit the same ceiling: limited OS
-authority, fragile accessibility automation, weak background continuity, and no
-clear place for consent, policy, or audit.
-
-OpenPhone explores a different architecture:
-
-- The assistant is a privileged OS component.
-- The model sees structured screen and task context rather than raw app access.
-- Actions go through policy and framework mediation.
-- Sensitive operations require explicit review.
-- Background work is represented as durable jobs, watchers, and commitments.
-- Device support is handled like a ROM project, with exact hardware targets and
-  validation evidence.
+- "Catch me up on everything important from overnight" - consume missed calls,
+  messages, notifications, calendar changes, and reminders, then return a short
+  morning gist.
+- "Order me an Uber to the office" - open the right app, set the destination,
+  select a ride, and stop for review before booking.
+- "Play something random on Spotify" - open Spotify, choose music, and continue
+  until playback actually starts.
+- "If I miss a call from this number, send them 'I'll call you back soon'" -
+  create a watcher tied to future call context and message policy.
+- "Watch for delivery updates and only bother me if something changes" - turn
+  notification noise into a targeted background monitor.
+- "Help me finish this screen" - inspect the visible app state, identify the
+  next control, and act through OS-mediated taps or text input.
+- "Remind me when this conversation becomes relevant" - turn a commitment into
+  durable state that can resurface later based on time, app, or phone context.
+- "Keep working on this after I leave" - continue a multi-step task as a
+  visible background run with approval where needed.
 
 ## How It Works
 
@@ -216,36 +167,10 @@ developer GMS sideload notes are in [docs/GMS.md](docs/GMS.md).
 See [devices/MATRIX.md](devices/MATRIX.md) and
 [devices/tegu.md](devices/tegu.md).
 
-## Releases And Validation
-
-Public releases are developer previews until `1.0.0`.
-
-- Release dashboard: [docs/releases/README.md](docs/releases/README.md)
-- Release notes: [docs/releases/0.0.1.md](docs/releases/0.0.1.md)
-- Changelog: [docs/releases/CHANGELOG.md](docs/releases/CHANGELOG.md)
-- Release process: [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md)
-- CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
-- GitHub release workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml)
-- Device eval workflow: [`.github/workflows/eval.yml`](.github/workflows/eval.yml)
-
-Every release should publish checksums, known issues, supported device notes,
-and validation evidence for any device artifact.
-
 ## Community
 
-Contributions are welcome from people who accept the contribution terms in
-[.github/CONTRIBUTING.md](.github/CONTRIBUTING.md). Good first areas are:
-
-- Agent eval tasks that expose real phone-control failures.
-- Pixel 9a validation reports and reproducible bug reports.
-- Device-port research for exact Android models and codenames.
-- Dynamic island and assistant UI polish.
-- Capability registry, policy, and audit contract improvements.
-- Build/release documentation that makes the ROM workflow easier to reproduce.
-
-Use GitHub issues for reproducible bugs and scoped feature proposals. Do not
-post secrets, private keys, personal device data, proprietary vendor files, or
-Google package files.
+Contributions, issues, and device validation reports are welcome under the
+terms in [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
 ## Commercial Use
 
