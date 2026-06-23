@@ -19,26 +19,36 @@ OpenPhone-owned Android overlay, privileged assistant app, framework patches,
 model/tool policy configuration, build scripts, device notes, contracts, and
 release tooling. It intentionally does not vendor the full Android source tree.
 
-## What Exists Today
+## Current Preview
 
-OpenPhone is an early developer preview. It is real ROM work, but it is not a
-consumer-ready phone OS.
+OpenPhone already boots on a real Pixel 9a as a LineageOS 23.2 / Android 16
+based ROM. It is still a developer preview, not a consumer-ready daily driver,
+but the core OS shape is in place: the assistant is installed as a privileged
+system component, and phone control is mediated through OpenPhone framework
+services instead of a standalone app trying to automate Android from the
+outside.
 
-- LineageOS 23.2 / Android 16 based build flow.
-- Google Pixel 9a (`tegu`) bringup as the first physical device target.
-- Privileged `OpenPhoneAssistant` app installed under `/system_ext`.
-- Dynamic island style agent surface for voice, replies, approvals, active
-  state, recent chat, watchers, and background runs.
-- Text/voice agent entry, OpenAI Responses flow, and optional OpenAI Realtime
-  voice session path for demos.
-- OS-owned Binder services for screen context, action confirmation, audit,
-  durable memory, commitments, watchers, and background agent state.
-- Model-visible tool registries and declarative capability/policy config.
-- Mediated app launch, URL launch, pointer/tap/scroll/text input, clipboard,
-  share, notification, messaging, and watcher reaction paths.
-- Hash-chained framework audit log and assistant trajectory export validators.
-- GitHub CI for repository checks, release artifact helpers, and physical
-  device eval workflow scaffolding.
+The assistant has a persistent system presence through the dynamic island. It
+can listen, answer, show recent conversation state, expose active watchers and
+background runs, request approval for sensitive actions, and switch between a
+bounded regular agent session and an optional realtime voice session for
+back-and-forth demos.
+
+The agent can use structured screen context and model-visible tools to operate
+the phone: launch apps, inspect the visible UI, tap, scroll, type, open links,
+use clipboard/share flows, react to notifications, and work with messaging
+paths under policy. The point is not a chat app; it is a phone-level loop that
+can observe, decide, act, and continue across app boundaries.
+
+OpenPhone also includes the beginning of proactivity. Watchers, commitments,
+and background runs give the agent durable state so it can monitor future phone
+events and continue work after the current chat turn. These surfaces are still
+early, but they are part of the OS layer rather than prompt-only behavior.
+
+Every serious action path is designed around review, policy, and evidence.
+OpenPhone has declarative capability registries, OS-owned data services,
+hash-chained framework audit logs, trajectory exports, and validators so agent
+behavior can be debugged, evaluated, and released with evidence.
 
 See [docs/SHOWCASE.md](docs/SHOWCASE.md) for the current demo surface and
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is still unfinished.
