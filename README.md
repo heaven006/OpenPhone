@@ -40,10 +40,11 @@ use clipboard/share flows, react to notifications, and work with messaging
 paths under policy. The point is not a chat app; it is a phone-level loop that
 can observe, decide, act, and continue across app boundaries.
 
-OpenPhone also includes the beginning of proactivity. Watchers, commitments,
-and background runs give the agent durable state so it can monitor future phone
-events and continue work after the current chat turn. These surfaces are still
-early, but they are part of the OS layer rather than prompt-only behavior.
+OpenPhone also includes the beginning of a proactive phone-agent runtime. The
+agent is not limited to one-off questions: it can keep commitments, maintain
+watchers, queue background runs, and use phone context to decide when something
+needs attention. These surfaces are still early, but they are part of the OS
+layer rather than prompt-only behavior.
 
 Every serious action path is designed around review, policy, and evidence.
 OpenPhone has declarative capability registries, OS-owned data services,
@@ -53,22 +54,49 @@ behavior can be debugged, evaluated, and released with evidence.
 See [docs/SHOWCASE.md](docs/SHOWCASE.md) for the current demo surface and
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is still unfinished.
 
+## Proactive Phone Agent Runtime
+
+OpenPhone is designed for agents that do not only answer when summoned. The OS
+can wake the agent through heartbeats, scheduled jobs, and phone-context
+watchers, then route work through the same tool, policy, approval, and audit
+pipeline as a user-initiated task.
+
+- **Heartbeats** are quiet periodic checks. The agent wakes up, reviews its
+  context, and only surfaces something if it needs attention.
+- **Scheduled jobs** are exact time-based workflows such as morning briefings,
+  end-of-day summaries, recurring reminders, or periodic checks.
+- **Watchers** are event-triggered monitors for phone context: missed calls,
+  messages, notifications, foreground app state, visible screen state,
+  calendar changes, location, battery, connectivity, or commitments the user
+  made in conversation.
+- **Background runs** are the durable agent tasks created by a watcher,
+  heartbeat, schedule, or deferred request. They keep working after the current
+  chat turn ends.
+- **The dynamic island** is the activity center: it shows what is running, why
+  it started, what it last said, which watchers are active, and what needs
+  review.
+
+This makes OpenPhone closer to an always-available phone agent runtime than a
+chat assistant. It can notice, remember, follow up, and act through phone-native
+context while keeping sensitive actions reviewable and auditable.
+
 ## Use Cases
 
-OpenPhone is being built for phone-level AI workflows that need OS context,
-durable state, and mediated action:
-
-- Screen-aware help: ask what is visible, what can be tapped, or what state an
-  app is in.
-- Cross-app task execution: open apps, navigate settings, search, compose,
+- **Missed-call follow-up**: notice a missed call, identify the caller, and
+  draft or send a policy-approved response.
+- **Notification triage**: summarize important notifications and suppress
+  noise until something actually needs the user's attention.
+- **Morning briefing**: combine calendar, weather, messages, reminders, and
+  device context into a useful start-of-day update.
+- **Screen-aware help**: answer what is visible, what can be tapped, or why a
+  flow appears stuck.
+- **Cross-app execution**: open apps, navigate settings, search, compose,
   share, and complete bounded UI tasks.
-- Proactive monitoring: create watchers for future calls, messages,
-  notifications, app states, or other device events.
-- Background follow-through: keep working on queued agent runs after the
-  current chat turn ends, with visible status and review where needed.
-- Voice-first control: use a bounded regular agent session for traceable tasks
-  or realtime voice for back-and-forth demos.
-- Auditable automation: export trajectories, screenshots, actions, policy
+- **Commitment tracking**: remember "I'll do that later" moments and surface
+  them when time, app, location, or conversation context makes them relevant.
+- **Background errands**: continue multi-step work after the user leaves the
+  chat, with visible run state and approval where needed.
+- **Auditable automation**: export trajectories, screenshots, actions, policy
   decisions, and framework audit evidence for debugging and release validation.
 
 ## Why This Exists
