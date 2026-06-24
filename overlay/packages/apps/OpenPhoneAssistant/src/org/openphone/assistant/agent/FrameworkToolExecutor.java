@@ -14,6 +14,7 @@ import android.net.Uri;
 import android.provider.CalendarContract;
 import android.provider.CallLog;
 import android.provider.ContactsContract;
+import android.provider.Settings;
 import android.provider.Telephony;
 import android.telephony.SmsManager;
 import android.telecom.TelecomManager;
@@ -50,6 +51,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class FrameworkToolExecutor {
+    private static final String SECURE_AUTONOMY_MODE = "openphone_autonomy_mode";
+
     private final Context mContext;
     private final OpenPhoneAgentManager mAgentManager;
     private final CommitmentStore mCommitmentStore;
@@ -2436,9 +2439,19 @@ public final class FrameworkToolExecutor {
         return new JSONObject(OpenPhoneAccessibilityService.snapshotJson());
     }
 
-    private static boolean shouldBlockScreenshot(JSONObject arguments, JSONObject uiTree) {
+    private boolean shouldBlockScreenshot(JSONObject arguments, JSONObject uiTree) {
         return arguments.optBoolean("include_screenshot", false)
+                && !fullYoloMode()
                 && hasSensitiveScreenFlag(uiTree);
+    }
+
+    private boolean fullYoloMode() {
+        try {
+            return "yolo".equals(Settings.Secure.getString(mContext.getContentResolver(),
+                    SECURE_AUTONOMY_MODE));
+        } catch (RuntimeException e) {
+            return false;
+        }
     }
 
     private static boolean hasSensitiveScreenFlag(JSONObject uiTree) {

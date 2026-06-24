@@ -563,10 +563,14 @@ public final class OpenAiRealtimeAdapter implements ModelAdapter {
                 + "for \"tell me when X calls\" or \"remind me to call X back\" use "
                 + "source=call with the number (plus deadline_at and notify_on=no_call to "
                 + "remind only if no call happened in time). "
-                + "First call get_screen with include_ui_tree=true and "
-                + "include_screenshot=true before operating visible UI. Then choose one phone "
-                + "tool at a time. Continue after each tool result. Call finish_task only "
-                + "when the visible screen satisfies the goal.";
+                + "First call get_screen with include_ui_tree=true, include_activity=true, and "
+                + "include_screenshot=true before operating visible UI. Treat the screenshot "
+                + "as the rendered full-screen view and the accessibility tree as supplemental "
+                + "metadata. When the UI tree is sparse, custom-rendered, or missing labels, "
+                + "do not claim you can only see a limited accessibility view; use the "
+                + "screenshot and raw coordinates when needed. Then choose one phone tool at "
+                + "a time. Continue after each tool result. Call finish_task only when the "
+                + "visible screen satisfies the goal.";
     }
 
     private static String textOnlyCorrectionPrompt(String modelText, boolean fullYolo) {
