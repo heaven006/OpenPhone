@@ -180,7 +180,7 @@ public final class OpenAiRealtimeVoiceSession {
                     callback.onStatus("Live Realtime 2");
                 }
             }
-        } catch (IOException | JSONException e) {
+        } catch (IOException | JSONException | RuntimeException e) {
             if (!mCancelled && !executor.isCancelled()) {
                 Log.w(TAG, "session failed", e);
                 callback.onError(e.getMessage() == null
@@ -482,17 +482,16 @@ public final class OpenAiRealtimeVoiceSession {
             return false;
         }
         mCompletedCallIds.add(call.callId);
-        JSONObject arguments;
-        try {
-            arguments = parseArguments(call.arguments);
-        } catch (JSONException e) {
+        ParseResult parsedArguments = parseArguments(call.arguments);
+        JSONObject arguments = parsedArguments.arguments;
+        if (parsedArguments.recoveredFromError) {
             if (isIgnoringPartialFunctionCalls()) {
                 Log.i(TAG, "ignoring partial function call after interruption name="
                         + call.name + " args=" + preview(call.arguments));
                 return false;
             }
             Log.w(TAG, "bad function arguments for " + call.name
-                    + ": " + preview(call.arguments), e);
+                    + ": " + preview(call.arguments) + "; reporting bad_tool_json");
             socket.send(new JSONObject()
                     .put("type", "conversation.item.create")
                     .put("item", new JSONObject()
@@ -610,7 +609,7 @@ public final class OpenAiRealtimeVoiceSession {
                 && SystemClock.uptimeMillis() - lastWrite < SELF_ECHO_GUARD_MS;
     }
 
-    private void drainPlayback(String reason) {
+    private synchronized void drainPlayback(String reason) {
         AudioTrack player = mPlayer;
         if (player == null || !mAssistantAudioActive) {
             return;
@@ -641,7 +640,14 @@ public final class OpenAiRealtimeVoiceSession {
     }
 
     private static long playbackHeadPosition(AudioTrack player) {
-        return player.getPlaybackHeadPosition() & 0xffffffffL;
+        if (player == null) {
+            return 0L;
+        }
+        try {
+            return player.getPlaybackHeadPosition() & 0xffffffffL;
+        } catch (IllegalStateException e) {
+            return 0L;
+        }
     }
 
     private void maybeStopPlaybackForLocalBargeIn(RealtimeWebSocket socket, Callback callback,
@@ -889,11 +895,15 @@ public final class OpenAiRealtimeVoiceSession {
         return calls;
     }
 
-    private static JSONObject parseArguments(String arguments) throws JSONException {
+    private static ParseResult parseArguments(String arguments) {
         if (arguments == null || arguments.trim().isEmpty()) {
-            return new JSONObject();
+            return new ParseResult(new JSONObject(), false);
         }
-        return new JSONObject(arguments);
+        try {
+            return new ParseResult(new JSONObject(arguments), false);
+        } catch (JSONException e) {
+            return new ParseResult(new JSONObject(), true);
+        }
     }
 
     private static void ensureToolReason(String toolName, JSONObject arguments)
@@ -933,6 +943,16 @@ public final class OpenAiRealtimeVoiceSession {
             this.callId = callId == null ? "" : callId;
             this.name = name == null ? "" : name;
             this.arguments = arguments == null ? "" : arguments;
+        }
+    }
+
+    private static final class ParseResult {
+        final JSONObject arguments;
+        final boolean recoveredFromError;
+
+        ParseResult(JSONObject arguments, boolean recoveredFromError) {
+            this.arguments = arguments == null ? new JSONObject() : arguments;
+            this.recoveredFromError = recoveredFromError;
         }
     }
 
