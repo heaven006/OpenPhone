@@ -86,9 +86,20 @@ The script:
 - prints the ZIP SHA-256,
 - waits until the device is in ADB sideload mode,
 - runs `adb sideload`,
+- after a successful sideload, waits for Android to boot and grants Google
+  Play Services the runtime location permissions and app-op modes required by
+  fused/network location providers,
 - leaves signature prompts and trust decisions to the user on the phone.
 
 The script does not validate that a package is safe, licensed, or compatible.
+
+If package-specific instructions require additional recovery packages before
+the first Android boot, pass `--skip-location-repair` and run the post-boot
+repair manually after Android starts:
+
+```bash
+scripts/repair-gms-location-permissions.sh --wait-device
+```
 
 ## Validated Pixel 9a Flow
 
@@ -118,7 +129,9 @@ scripts/sideload-user-gms.sh \
 ```
 
 When host-side sideload finishes with `Total xfer: 1.00x`, read the recovery log
-on the phone. If recovery reports success, choose `Reboot system now`.
+on the phone. If recovery reports success, choose `Reboot system now`. The host
+helper waits for Android, then repairs Google Play Services location grants so
+third-party fused-location apps can use Play Services' location provider.
 
 If the phone had already booted OpenPhone before Google services were added,
 Google apps may still fail. The clean supported flow is to reinstall the
@@ -174,6 +187,23 @@ The clean supported recovery path is to reinstall the OpenPhone OTA, sideload
 the user-supplied GMS ZIP immediately as an additional package before first
 normal boot, then reboot system. Installing Play Store or Play services as
 ordinary APKs after first boot is not a supported GMS state for OpenPhone.
+
+### Fused Location Provider Has No Location Fixes
+
+If Google Maps and raw GPS apps work but apps such as Uber or Lyft cannot get
+location, verify that Google Play Services itself has location permissions and
+app-op access:
+
+```bash
+scripts/repair-gms-location-permissions.sh
+```
+
+This is safe to rerun. It grants `ACCESS_COARSE_LOCATION`,
+`ACCESS_FINE_LOCATION`, and `ACCESS_BACKGROUND_LOCATION` to
+`com.google.android.gms`, then sets the `COARSE_LOCATION` and `FINE_LOCATION`
+app-ops to `allow`. This repairs the state where Android's raw GPS provider
+works but Play Services' fused/network provider receives no delivered
+locations for third-party apps.
 
 If Play Store worked immediately after a recovery GMS sideload and later broke
 after an OpenPhone OTA, check for this exact state. OpenPhone OTAs do not

@@ -250,3 +250,6 @@ scripts/sideload-user-gms.sh \
 
 For Pixel 9a, run the sideload command after installing the OpenPhone OTA and
 entering recovery `Apply update -> Apply from ADB` for additional packages.
+After sideload success, the helper waits for Android to boot and grants Google
+Play Services the location permissions/app-ops needed by fused/network location
+providers.

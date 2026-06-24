@@ -78,6 +78,9 @@ flow, and device support.
   environment model allowlist retained as a local override.
 - JSON device-subject registry support for the model broker token issuer, so
   hosted development brokers can reject unknown token subjects.
+- User-supplied GMS sideload helper now runs a post-boot Google Play Services
+  location grant repair so fused/network location clients can receive provider
+  fixes on developer devices.
 - Optional per-subject development HMAC proof for model broker token issuance,
   so registered device subjects can be required to prove possession of a
   device secret before receiving a signed session token.

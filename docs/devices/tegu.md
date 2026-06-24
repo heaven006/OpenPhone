@@ -159,7 +159,9 @@ Typical recovery flow:
    scripts/download-mindthegapps.sh
    scripts/sideload-user-gms.sh \
      --package .worktree/downloads/gms/MindTheGapps-16.0.0-arm64-*.zip
-6. If recovery reports success, choose Reboot system now.
+6. If recovery reports success, choose Reboot system now. The host helper then
+   waits for Android and repairs Google Play Services location grants for
+   fused/network location providers.
 ```
 
 The sideload helper only runs `adb sideload` against a local ZIP. It does not

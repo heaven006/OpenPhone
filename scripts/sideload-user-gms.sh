@@ -8,7 +8,7 @@ source "$root/scripts/common.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/sideload-user-gms.sh --package <gapps.zip> [--reboot-recovery]
+Usage: scripts/sideload-user-gms.sh --package <gapps.zip> [--reboot-recovery] [--skip-location-repair]
 
 Sideloads a user-supplied Google apps / GMS package from recovery.
 
@@ -23,14 +23,19 @@ Expected phone state:
   3. `adb devices` shows the phone in `sideload` state.
 
 Options:
-  --package <zip>      User-supplied GApps/GMS ZIP to sideload.
-  --reboot-recovery    Reboot an already-booted ADB device into recovery first.
-  -h, --help           Show this help.
+  --package <zip>          User-supplied GApps/GMS ZIP to sideload.
+  --reboot-recovery        Reboot an already-booted ADB device into recovery first.
+  --skip-location-repair   Do not wait after sideload to grant Play Services
+                           location permissions/app-ops.
+  --post-boot-timeout <s>  Maximum post-sideload Android boot wait. Default: 600.
+  -h, --help               Show this help.
 EOF
 }
 
 package=""
 reboot_recovery="false"
+location_repair="true"
+post_boot_timeout=600
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,6 +47,16 @@ while [[ $# -gt 0 ]]; do
     --reboot-recovery)
       reboot_recovery="true"
       shift
+      ;;
+    --skip-location-repair)
+      location_repair="false"
+      shift
+      ;;
+    --post-boot-timeout)
+      [[ $# -ge 2 ]] || die "--post-boot-timeout requires a value"
+      post_boot_timeout="$2"
+      [[ "$post_boot_timeout" =~ ^[0-9]+$ ]] || die "--post-boot-timeout must be seconds"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -156,6 +171,8 @@ Sideload command finished.
 If recovery reports status 0 / success:
   - Choose Reboot system now unless the package instructions require another
     package first.
+  - This script will then wait for Android and grant Google Play Services the
+    location permissions/app-ops required by fused/network location providers.
 
 If recovery reports an error:
   - Do not wipe blindly.
@@ -163,3 +180,17 @@ If recovery reports an error:
   - Reinstall the OpenPhone OTA and sideload the GMS package immediately after
     the OTA if the package requires a clean first-boot install.
 EOF
+
+if [[ "$location_repair" == "true" ]]; then
+  cat >&2 <<'EOF'
+
+Waiting for Android to boot so the host can repair Google Play Services
+location grants. To defer this step, stop the script and later run:
+
+  scripts/repair-gms-location-permissions.sh --wait-device
+EOF
+
+  "$root/scripts/repair-gms-location-permissions.sh" \
+    --wait-device \
+    --timeout "$post_boot_timeout"
+fi

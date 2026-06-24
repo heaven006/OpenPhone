@@ -63,6 +63,7 @@ required=(
   scripts/diagnose-device-connection.sh
   scripts/download-mindthegapps.sh
   scripts/generate-app-policy-override.sh
+  scripts/repair-gms-location-permissions.sh
   scripts/sideload-user-gms.sh
   scripts/rotate-model-broker-secrets.sh
   scripts/push-assistant-apk.sh
