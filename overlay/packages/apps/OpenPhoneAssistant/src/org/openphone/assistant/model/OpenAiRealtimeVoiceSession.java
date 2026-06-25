@@ -65,6 +65,8 @@ public final class OpenAiRealtimeVoiceSession {
     private static final long INTERRUPTED_AUDIO_DROP_GRACE_MS = 2500;
     private static final double LOCAL_BARGE_IN_RMS = 1700.0;
     private static final double SERVER_BARGE_IN_RMS = 900.0;
+    private static final int AUTO_SCREEN_MAX_TEXT_CHARS = 7000;
+    private static final int AUTO_SCREEN_MAX_ARRAY_ITEMS = 32;
     private static final String REALTIME_URL =
             "wss://api.openai.com/v1/realtime?model=" + MODEL;
 
@@ -198,8 +200,8 @@ public final class OpenAiRealtimeVoiceSession {
     private JSONObject sessionUpdateEvent() throws JSONException {
         JSONObject turnDetection = new JSONObject()
                 .put("type", "semantic_vad")
-                .put("eagerness", "low")
-                .put("create_response", true)
+                .put("eagerness", "high")
+                .put("create_response", false)
                 .put("interrupt_response", true);
         JSONObject input = new JSONObject()
                 .put("format", new JSONObject()
@@ -220,7 +222,7 @@ public final class OpenAiRealtimeVoiceSession {
                 .put("output_modalities", new JSONArray().put("audio"))
                 .put("audio", new JSONObject()
                         .put("input", input)
-                        .put("output", output))
+                        .put("output", output.put("speed", 1.18)))
                 .put("reasoning", new JSONObject().put("effort", "low"))
                 .put("tool_choice", "auto")
                 .put("tools", ToolCatalog.get().realtimeToolDefinitions());
@@ -243,12 +245,12 @@ public final class OpenAiRealtimeVoiceSession {
                 + continuity
                 + yoloModeInstruction(fullYolo)
                 + initiativeInstruction()
-                + "Act first. Use the phone tools whenever they help. Inspect the screen to "
-                + "understand and operate the UI, not to lecture about whether the screen is "
-                + "okay. If the user asks about the visible screen, call get_screen before "
-                + "answering. For visible UI tasks, call get_screen with include_screenshot=true, "
-                + "include_activity=true, and include_ui_tree=true; treat the screenshot as the "
-                + "rendered full-screen view and the accessibility tree as supplemental metadata. "
+                + "Act first. Use the phone tools whenever they help. A fresh screen snapshot "
+                + "is automatically added after each user turn and after visible UI actions; "
+                + "use it instead of first calling get_screen. Call get_screen only when that "
+                + "automatic snapshot is missing, stale, or you need to verify a new screen. "
+                + "Treat the screenshot as the rendered full-screen view and the accessibility "
+                + "tree as supplemental metadata. "
                 + "When the UI tree is sparse, custom-rendered, or missing labels, do not claim "
                 + "you can only see a limited accessibility view; use the screenshot and raw "
                 + "coordinates when needed. If the user asks you to control an app, keep observing and "
@@ -260,8 +262,9 @@ public final class OpenAiRealtimeVoiceSession {
                 + "navigation, typing fields, searching, choosing visible options, or "
                 + "preparing a workflow. "
                 + approvalResultInstruction(fullYolo)
-                + "Keep voice replies short while working, then "
-                + "summarize the outcome.";
+                + "Default to silence while taking tool actions. Do not narrate plans, tool "
+                + "names, uncertainty, or obvious UI state. If you must speak mid-task, use "
+                + "at most five words. Final outcomes should be one short sentence.";
     }
 
     private static String initiativeInstruction() {
@@ -269,7 +272,8 @@ public final class OpenAiRealtimeVoiceSession {
                 + "careful monologue. Make reasonable assumptions, choose default/top/"
                 + "visible options, keep moving through reversible UI, and verify progress "
                 + "from the screen yourself. Do not ask the user to confirm every step or "
-                + "repeat back obvious plans. Speak briefly while working. ";
+                + "repeat back obvious plans. Do not explain what you are about to do; just "
+                + "do it. ";
     }
 
     private static String yoloModeInstruction(boolean fullYolo) {
@@ -399,7 +403,16 @@ public final class OpenAiRealtimeVoiceSession {
             return;
         }
         if ("input_audio_buffer.speech_stopped".equals(type)) {
+            callback.onStatus("Observing");
+            return;
+        }
+        if ("input_audio_buffer.committed".equals(type)) {
+            callback.onStatus("Observing");
+            appendAutoScreenContext(socket, executor,
+                    "fresh screen after the user's latest voice turn");
+            socket.send(new JSONObject().put("type", "response.create"));
             callback.onStatus("Thinking");
+            Log.i(TAG, "response.create sent after auto screen context");
             return;
         }
         if ("conversation.item.input_audio_transcription.done".equals(type)) {
@@ -522,7 +535,146 @@ public final class OpenAiRealtimeVoiceSession {
                         .put("type", "function_call_output")
                         .put("call_id", call.callId)
                         .put("output", output == null ? "" : output)));
+        if (ToolCatalog.get().drivesVisibleUi(call.name) && !executor.isCancelled()) {
+            appendAutoScreenContext(socket, executor,
+                    "fresh screen after " + call.name);
+        }
         return true;
+    }
+
+    private void appendAutoScreenContext(RealtimeWebSocket socket,
+            ModelAdapter.ToolExecutor executor, String reason) {
+        if (socket == null || executor == null || executor.isCancelled()) {
+            return;
+        }
+        try {
+            JSONObject arguments = new JSONObject()
+                    .put("include_screenshot", true)
+                    .put("include_activity", true)
+                    .put("include_ui_tree", true)
+                    .put("max_dimension", 384)
+                    .put("quality", 45)
+                    .put("reason", reason == null || reason.trim().isEmpty()
+                            ? "refresh current visible phone screen for realtime context"
+                            : reason);
+            String screen = executor.callTool("get_screen", arguments.toString());
+            JSONObject screenJson = new JSONObject(screen == null ? "{}" : screen);
+            socket.send(autoScreenConversationItem(screenJson, reason));
+            Log.i(TAG, "auto screen context appended reason=" + preview(reason)
+                    + " chars=" + (screen == null ? 0 : screen.length()));
+        } catch (JSONException | IOException | RuntimeException e) {
+            Log.w(TAG, "auto screen context failed", e);
+        }
+    }
+
+    private static JSONObject autoScreenConversationItem(JSONObject screenJson, String reason)
+            throws JSONException {
+        JSONArray content = new JSONArray()
+                .put(new JSONObject()
+                        .put("type", "input_text")
+                        .put("text", autoScreenText(screenJson, reason)));
+        JSONObject screenshot = screenJson == null ? null : screenJson.optJSONObject("screenshot");
+        if (screenshot != null) {
+            String data = screenshot.optString("data", "");
+            if (!data.isEmpty()) {
+                String mimeType = screenshot.optString("mime_type", "image/jpeg");
+                content.put(new JSONObject()
+                        .put("type", "input_image")
+                        .put("image_url", "data:" + mimeType + ";base64," + data)
+                        .put("detail", "low"));
+            }
+        }
+        return new JSONObject()
+                .put("type", "conversation.item.create")
+                .put("item", new JSONObject()
+                        .put("type", "message")
+                        .put("role", "user")
+                        .put("content", content));
+    }
+
+    private static String autoScreenText(JSONObject screenJson, String reason)
+            throws JSONException {
+        JSONObject compact = compactScreenJson(screenJson);
+        String text = "Automatic current phone screen context"
+                + (reason == null || reason.trim().isEmpty() ? "" : " (" + reason.trim() + ")")
+                + ". Use this before deciding the next phone action. "
+                + "Do not describe this context to the user unless they asked what is visible.\n"
+                + compact.toString();
+        if (text.length() <= AUTO_SCREEN_MAX_TEXT_CHARS) {
+            return text;
+        }
+        return text.substring(0, AUTO_SCREEN_MAX_TEXT_CHARS)
+                + "...<truncated>";
+    }
+
+    private static JSONObject compactScreenJson(JSONObject screenJson) throws JSONException {
+        JSONObject compact = new JSONObject();
+        if (screenJson == null) {
+            return compact.put("status", "screen_unavailable");
+        }
+        compact.put("status", screenJson.optString("status", ""));
+        compact.put("source", screenJson.optString("source", ""));
+        compact.put("foreground_package", screenJson.optString("foreground_package", ""));
+        JSONObject context = screenJson.optJSONObject("context");
+        if (context != null) {
+            JSONObject contextCopy = new JSONObject();
+            contextCopy.put("foreground_package", context.optString("foreground_package", ""));
+            contextCopy.put("foreground_activity", context.optString("foreground_activity", ""));
+            contextCopy.put("screen_width", context.optInt("screen_width", 0));
+            contextCopy.put("screen_height", context.optInt("screen_height", 0));
+            compact.put("context", contextCopy);
+        }
+        JSONArray riskFlags = screenJson.optJSONArray("risk_flags");
+        if (riskFlags != null) {
+            compact.put("risk_flags", limitArray(riskFlags, AUTO_SCREEN_MAX_ARRAY_ITEMS));
+        }
+        JSONArray visibleText = screenJson.optJSONArray("visible_text");
+        if (visibleText != null) {
+            compact.put("visible_text", limitArray(visibleText, AUTO_SCREEN_MAX_ARRAY_ITEMS));
+        }
+        JSONArray elements = screenJson.optJSONArray("interactive_elements");
+        if (elements != null) {
+            compact.put("interactive_elements", limitArray(elements, AUTO_SCREEN_MAX_ARRAY_ITEMS));
+        }
+        JSONObject screenshot = screenJson.optJSONObject("screenshot");
+        if (screenshot != null) {
+            compact.put("screenshot", new JSONObject()
+                    .put("included", !screenshot.optString("data", "").isEmpty())
+                    .put("mime_type", screenshot.optString("mime_type", ""))
+                    .put("width", screenshot.optInt("width", 0))
+                    .put("height", screenshot.optInt("height", 0)));
+        }
+        JSONObject uiTree = screenJson.optJSONObject("ui_tree");
+        if (uiTree != null && compact.optJSONArray("visible_text") == null) {
+            JSONArray treeText = uiTree.optJSONArray("visible_text");
+            if (treeText != null) {
+                compact.put("visible_text", limitArray(treeText, AUTO_SCREEN_MAX_ARRAY_ITEMS));
+            }
+        }
+        if (uiTree != null && compact.optJSONArray("interactive_elements") == null) {
+            JSONArray treeElements = uiTree.optJSONArray("interactive_elements");
+            if (treeElements != null) {
+                compact.put("interactive_elements",
+                        limitArray(treeElements, AUTO_SCREEN_MAX_ARRAY_ITEMS));
+            }
+        }
+        return compact;
+    }
+
+    private static JSONArray limitArray(JSONArray input, int limit) throws JSONException {
+        JSONArray out = new JSONArray();
+        if (input == null) {
+            return out;
+        }
+        int count = Math.min(Math.max(limit, 0), input.length());
+        for (int i = 0; i < count; i++) {
+            Object value = input.get(i);
+            out.put(value);
+        }
+        if (input.length() > count) {
+            out.put("... " + (input.length() - count) + " more");
+        }
+        return out;
     }
 
     private synchronized void playAudioDelta(JSONObject event) throws IOException {
