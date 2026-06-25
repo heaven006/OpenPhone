@@ -35,8 +35,10 @@ object AssistantComposeHost {
                 useRealtime: Boolean,
                 useRealtime2: Boolean,
                 useLiveRealtimeVoice: Boolean,
+                useGeminiLiveVoice: Boolean,
                 useBroker: Boolean,
                 apiKey: String,
+                geminiApiKey: String,
                 brokerUrl: String,
                 brokerToken: String,
             ) {
@@ -45,8 +47,10 @@ object AssistantComposeHost {
                         useRealtimeVision = useRealtime,
                         useRealtime2 = useRealtime2,
                         useLiveRealtimeVoice = useLiveRealtimeVoice,
+                        useGeminiLiveVoice = useGeminiLiveVoice,
                         useBroker = useBroker,
                         devApiKey = apiKey,
+                        geminiApiKey = geminiApiKey,
                         brokerUrl = brokerUrl,
                         brokerToken = brokerToken,
                     )
@@ -150,8 +154,10 @@ object AssistantComposeHost {
                                 it.useRealtimeVision,
                                 it.useRealtime2,
                                 it.useLiveRealtimeVoice,
+                                it.useGeminiLiveVoice,
                                 it.useBroker,
                                 it.devApiKey,
+                                it.geminiApiKey,
                                 it.brokerUrl,
                                 it.brokerToken,
                             )

@@ -23,6 +23,8 @@ import org.openphone.assistant.ui.common.GlassSurface
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ModelSection(state: ModelConfig, onChange: (ModelConfig) -> Unit) {
+    val openAiLive = state.useLiveRealtimeVoice && !state.useGeminiLiveVoice
+    val geminiLive = state.useGeminiLiveVoice
     GlassSurface(modifier = Modifier.fillMaxWidth()) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Voice", style = MaterialTheme.typography.titleMedium)
@@ -30,52 +32,89 @@ fun ModelSection(state: ModelConfig, onChange: (ModelConfig) -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                if (state.useLiveRealtimeVoice) {
-                    OutlinedButton(
-                        onClick = { onChange(state.copy(useLiveRealtimeVoice = false)) },
+                if (!openAiLive && !geminiLive) {
+                    Button(
+                        onClick = { onChange(state.copy(
+                            useLiveRealtimeVoice = false,
+                            useGeminiLiveVoice = false,
+                        )) },
                     ) { Text("Classic") }
+                } else {
+                    OutlinedButton(
+                        onClick = { onChange(state.copy(
+                            useLiveRealtimeVoice = false,
+                            useGeminiLiveVoice = false,
+                        )) },
+                    ) { Text("Classic") }
+                }
+                if (openAiLive) {
                     Button(onClick = { onChange(state.copy(
                         useRealtimeVision = true,
                         useRealtime2 = true,
                         useLiveRealtimeVoice = true,
+                        useGeminiLiveVoice = false,
                         useBroker = false,
                     )) }) { Text("Live Realtime 2") }
                 } else {
-                    Button(
-                        onClick = { onChange(state.copy(useLiveRealtimeVoice = false)) },
-                    ) { Text("Classic") }
                     OutlinedButton(onClick = { onChange(state.copy(
                         useRealtimeVision = true,
                         useRealtime2 = true,
                         useLiveRealtimeVoice = true,
+                        useGeminiLiveVoice = false,
                         useBroker = false,
                     )) }) { Text("Live Realtime 2") }
                 }
+                if (geminiLive) {
+                    Button(onClick = { onChange(state.copy(
+                        useLiveRealtimeVoice = false,
+                        useGeminiLiveVoice = true,
+                        useBroker = false,
+                    )) }) { Text("Gemini Live") }
+                } else {
+                    OutlinedButton(onClick = { onChange(state.copy(
+                        useLiveRealtimeVoice = false,
+                        useGeminiLiveVoice = true,
+                        useBroker = false,
+                    )) }) { Text("Gemini Live") }
+                }
             }
             Text(
-                text = if (state.useLiveRealtimeVoice) {
+                text = if (geminiLive) {
+                    "Volume buttons start a Gemini Live session with streamed screen frames."
+                } else if (openAiLive) {
                     "Volume buttons start a live gpt-realtime-2 voice session."
                 } else {
                     "Volume buttons use the current OpenPhone voice command flow."
                 },
                 style = MaterialTheme.typography.bodySmall,
             )
-            if (!state.useLiveRealtimeVoice) {
+            if (!openAiLive && !geminiLive) {
                 SettingRow(
                     "Use broker",
                     checked = state.useBroker,
                     onCheckedChange = { onChange(state.copy(useBroker = it)) },
                 )
             }
-            OutlinedTextField(
-                value = state.devApiKey,
-                onValueChange = { onChange(state.copy(devApiKey = it)) },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("OpenAI API key") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-            )
-            if (!state.useLiveRealtimeVoice && state.useBroker) {
+            if (geminiLive) {
+                OutlinedTextField(
+                    value = state.geminiApiKey,
+                    onValueChange = { onChange(state.copy(geminiApiKey = it)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Gemini API key") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                )
+            } else {
+                OutlinedTextField(
+                    value = state.devApiKey,
+                    onValueChange = { onChange(state.copy(devApiKey = it)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("OpenAI API key") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                )
+            }
+            if (!openAiLive && !geminiLive && state.useBroker) {
                 OutlinedTextField(
                     value = state.brokerUrl,
                     onValueChange = { onChange(state.copy(brokerUrl = it)) },
@@ -98,7 +137,9 @@ fun ModelSection(state: ModelConfig, onChange: (ModelConfig) -> Unit) {
 }
 
 private fun voiceDisclosure(state: ModelConfig): String {
-    return if (state.useLiveRealtimeVoice) {
+    return if (state.useGeminiLiveVoice) {
+        "Gemini Live uses gemini-3.1-flash-live-preview for a live speech-to-speech session with about one streamed screen frame per second. Phone actions still run through OpenPhone tools."
+    } else if (state.useLiveRealtimeVoice) {
         "Live Realtime 2 uses gpt-realtime-2 for a live speech-to-speech session. Mic audio streams while the session is active; phone actions still run through OpenPhone tools."
     } else if (state.useBroker) {
         "Classic records one command, sends it to the configured broker, then runs the existing OpenPhone agent."

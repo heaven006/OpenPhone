@@ -174,6 +174,28 @@ public final class ToolCatalog {
         return tools;
     }
 
+    /** Gemini Live function declarations generated from the same registry. */
+    public JSONArray geminiFunctionDeclarations() throws JSONException {
+        JSONArray declarations = new JSONArray();
+        for (ActionRegistry.ActionMetadata action : mRegistry.tools()) {
+            JSONObject parameters = new JSONObject(action.inputSchema.toString());
+            if (!parameters.has("type")) {
+                parameters.put("type", "object");
+            }
+            if (!parameters.has("properties")) {
+                parameters.put("properties", new JSONObject());
+            }
+            if (!parameters.has("required")) {
+                parameters.put("required", new JSONArray());
+            }
+            declarations.put(new JSONObject()
+                    .put("name", action.modelTool)
+                    .put("description", action.description)
+                    .put("parameters", parameters));
+        }
+        return declarations;
+    }
+
     public List<ActionRegistry.ActionMetadata> tools() {
         return mRegistry.tools();
     }

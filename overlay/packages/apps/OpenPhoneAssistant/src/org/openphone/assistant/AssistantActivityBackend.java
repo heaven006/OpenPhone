@@ -29,6 +29,7 @@ import org.openphone.assistant.agent.TrajectoryRecorder;
 import org.openphone.assistant.actions.ActionRegistry;
 import org.openphone.assistant.context.ContextIndexStore;
 import org.openphone.assistant.model.LocalHeuristicModelAdapter;
+import org.openphone.assistant.model.GeminiLiveVoiceSession;
 import org.openphone.assistant.model.ModelEndpointConfig;
 import org.openphone.assistant.model.ModelAdapter;
 import org.openphone.assistant.model.OpenAiRealtimeAdapter;
@@ -51,7 +52,8 @@ public class AssistantActivityBackend extends ComponentActivity {
         void setAuditText(String text);
         void setModelDisclosure(String text);
         void setModelConfig(boolean useRealtime, boolean useRealtime2,
-                boolean useLiveRealtimeVoice, boolean useBroker, String apiKey,
+                boolean useLiveRealtimeVoice, boolean useGeminiLiveVoice,
+                boolean useBroker, String apiKey, String geminiApiKey,
                 String brokerUrl, String brokerToken);
         void setOtaStatus(String text, boolean canDownload);
         void setRuntimeStatus(String text, String activeTaskId, boolean running,
@@ -66,6 +68,8 @@ public class AssistantActivityBackend extends ComponentActivity {
 
     private static final String EXTRA_DEV_OPENAI_API_KEY =
             "org.openphone.assistant.extra.DEV_OPENAI_API_KEY";
+    private static final String EXTRA_DEV_GEMINI_API_KEY =
+            "org.openphone.assistant.extra.DEV_GEMINI_API_KEY";
     private static final String EXTRA_GOAL = "org.openphone.assistant.extra.GOAL";
     private static final String EXTRA_GOAL_BASE64 =
             "org.openphone.assistant.extra.GOAL_BASE64";
@@ -128,6 +132,7 @@ public class AssistantActivityBackend extends ComponentActivity {
     private static final String PREF_VOICE_MODE = "voice_mode";
     private static final String VOICE_MODE_CLASSIC = "classic";
     private static final String VOICE_MODE_LIVE_REALTIME_2 = "live_realtime_2";
+    private static final String VOICE_MODE_GEMINI_LIVE = "gemini_live";
     private static final String[] FULL_YOLO_APPROVED_CAPABILITIES = {
             "screen.read.visible",
             "screen.capture",
@@ -170,6 +175,7 @@ public class AssistantActivityBackend extends ComponentActivity {
     private static final String SECURE_AUTONOMY_MODE = "openphone_autonomy_mode";
     private static final String SECURE_VOICE_MODE = "openphone_voice_mode";
     private static final String SECURE_DEV_OPENAI_API_KEY = "openphone_dev_openai_api_key";
+    private static final String SECURE_DEV_GEMINI_API_KEY = "openphone_dev_gemini_api_key";
     private static AssistantActivityBackend sActiveControlRunner;
     private static long sLastQuickVolumeChordUptimeMillis;
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
@@ -197,6 +203,7 @@ public class AssistantActivityBackend extends ComponentActivity {
     private ModelAdapter mRunningChatAdapter;
     private volatile OpenAiSpeechTranscriber mRunningSpeechTranscriber;
     private volatile OpenAiRealtimeVoiceSession mRunningRealtimeVoiceSession;
+    private volatile GeminiLiveVoiceSession mRunningGeminiLiveVoiceSession;
     private volatile String mRealtimeVoiceTaskId;
     private OtaUpdateClient.Update mLatestOtaUpdate;
     private boolean mListening;
@@ -213,6 +220,7 @@ public class AssistantActivityBackend extends ComponentActivity {
     private String mComposeGoalText = "";
     private String mComposeActionJson = "";
     private String mComposeApiKey = "";
+    private String mComposeGeminiApiKey = "";
     private String mComposeBrokerUrl = "";
     private String mComposeBrokerToken = "";
     private String mComposeOtaFeedUrl = "";
@@ -225,6 +233,7 @@ public class AssistantActivityBackend extends ComponentActivity {
     private boolean mComposeUseRealtime;
     private boolean mComposeUseRealtime2;
     private boolean mComposeUseLiveRealtimeVoice;
+    private boolean mComposeUseGeminiLiveVoice;
     private boolean mComposeInputGrant = true;
     private boolean mComposeScreenCaptureGrant = true;
     private boolean mComposeClipboardGrant;
@@ -449,6 +458,17 @@ public class AssistantActivityBackend extends ComponentActivity {
             mComposeUseRealtime = true;
             mComposeUseBroker = false;
             mComposeApiKey = apiKey;
+            persistDebugKey(SECURE_DEV_OPENAI_API_KEY, apiKey);
+            refreshModelDisclosure();
+        }
+        String geminiApiKey = intent.getStringExtra(EXTRA_DEV_GEMINI_API_KEY);
+        if (geminiApiKey != null) {
+            mComposeUseGeminiLiveVoice = true;
+            mComposeUseLiveRealtimeVoice = false;
+            mComposeUseBroker = false;
+            mComposeGeminiApiKey = geminiApiKey;
+            persistVoiceMode(VOICE_MODE_GEMINI_LIVE);
+            persistDebugKey(SECURE_DEV_GEMINI_API_KEY, geminiApiKey);
             refreshModelDisclosure();
         }
         String goal = debugGoalFromIntent(intent);
@@ -479,7 +499,8 @@ public class AssistantActivityBackend extends ComponentActivity {
     private boolean isAgentOrVoiceActive() {
         return mListening || mActiveTaskId != null || mAgentThread != null
                 || mChatThread != null || mRunningChatAdapter != null
-                || mRunningRealtimeVoiceSession != null;
+                || mRunningRealtimeVoiceSession != null
+                || mRunningGeminiLiveVoiceSession != null;
     }
 
     private boolean hasPendingVolumeChord() {
@@ -536,7 +557,7 @@ public class AssistantActivityBackend extends ComponentActivity {
             sActiveControlRunner = this;
         }
         final int generation = ++mVolumeChordGeneration;
-        setTaskText("Hold for classic, double-click for live Realtime 2.");
+        setTaskText("Hold for classic, double-click for " + liveVoiceLabel() + ".");
         updateIsland("Volume chord");
         postToUi(new Runnable() {
             @Override
@@ -635,17 +656,21 @@ public class AssistantActivityBackend extends ComponentActivity {
     }
 
     public void onComposeModelConfigChanged(boolean useRealtime, boolean useRealtime2,
-            boolean useLiveRealtimeVoice, boolean useBroker, String apiKey, String brokerUrl,
-            String brokerToken) {
+            boolean useLiveRealtimeVoice, boolean useGeminiLiveVoice, boolean useBroker,
+            String apiKey, String geminiApiKey, String brokerUrl, String brokerToken) {
         mComposeUseRealtime = useRealtime;
         mComposeUseRealtime2 = useRealtime && useRealtime2;
-        mComposeUseLiveRealtimeVoice = useLiveRealtimeVoice;
+        mComposeUseGeminiLiveVoice = useGeminiLiveVoice;
+        mComposeUseLiveRealtimeVoice = useLiveRealtimeVoice && !useGeminiLiveVoice;
         mComposeUseBroker = useBroker;
         mComposeApiKey = apiKey == null ? "" : apiKey;
+        mComposeGeminiApiKey = geminiApiKey == null ? "" : geminiApiKey;
         mComposeBrokerUrl = brokerUrl == null ? "" : brokerUrl;
         mComposeBrokerToken = brokerToken == null ? "" : brokerToken;
-        persistVoiceMode(useLiveRealtimeVoice
-                ? VOICE_MODE_LIVE_REALTIME_2 : VOICE_MODE_CLASSIC);
+        persistVoiceMode(useGeminiLiveVoice ? VOICE_MODE_GEMINI_LIVE
+                : useLiveRealtimeVoice ? VOICE_MODE_LIVE_REALTIME_2 : VOICE_MODE_CLASSIC);
+        persistDebugKey(SECURE_DEV_OPENAI_API_KEY, mComposeApiKey);
+        persistDebugKey(SECURE_DEV_GEMINI_API_KEY, mComposeGeminiApiKey);
         refreshModelDisclosure();
     }
 
@@ -802,10 +827,30 @@ public class AssistantActivityBackend extends ComponentActivity {
     }
 
     private boolean useLiveRealtimeVoice() {
+        String voiceMode = voiceModeDefault();
+        if (VOICE_MODE_LIVE_REALTIME_2.equals(voiceMode)
+                || VOICE_MODE_GEMINI_LIVE.equals(voiceMode)) {
+            return true;
+        }
+        return mComposeUseLiveRealtimeVoice || mComposeUseGeminiLiveVoice;
+    }
+
+    private boolean useOpenAiLiveRealtimeVoice() {
         if (VOICE_MODE_LIVE_REALTIME_2.equals(voiceModeDefault())) {
             return true;
         }
-        return mComposeUseLiveRealtimeVoice;
+        return mComposeUseLiveRealtimeVoice && !mComposeUseGeminiLiveVoice;
+    }
+
+    private boolean useGeminiLiveVoice() {
+        if (VOICE_MODE_GEMINI_LIVE.equals(voiceModeDefault())) {
+            return true;
+        }
+        return mComposeUseGeminiLiveVoice;
+    }
+
+    private String liveVoiceLabel() {
+        return useGeminiLiveVoice() ? "Gemini Live" : "Live Realtime 2";
     }
 
     private String realtimeModelId() {
@@ -816,6 +861,14 @@ public class AssistantActivityBackend extends ComponentActivity {
 
     private boolean useBrokerModel() {
         return mComposeUseBroker;
+    }
+
+    private String geminiApiKey() {
+        String apiKey = mComposeGeminiApiKey == null ? "" : mComposeGeminiApiKey;
+        if (apiKey.isEmpty() && debugIntentExtrasAllowed()) {
+            apiKey = Settings.Secure.getString(getContentResolver(), SECURE_DEV_GEMINI_API_KEY);
+        }
+        return apiKey == null ? "" : apiKey;
     }
 
     private void setTaskText(String text) {
@@ -849,7 +902,8 @@ public class AssistantActivityBackend extends ComponentActivity {
     private void pushComposeModelConfig() {
         if (mComposeStateCallbacks != null) {
             mComposeStateCallbacks.setModelConfig(mComposeUseRealtime, mComposeUseRealtime2,
-                    mComposeUseLiveRealtimeVoice, mComposeUseBroker, mComposeApiKey,
+                    mComposeUseLiveRealtimeVoice, mComposeUseGeminiLiveVoice,
+                    mComposeUseBroker, mComposeApiKey, mComposeGeminiApiKey,
                     mComposeBrokerUrl, mComposeBrokerToken);
         }
     }
@@ -876,7 +930,9 @@ public class AssistantActivityBackend extends ComponentActivity {
         mComposeShareGrant = grantDefault(PREF_GRANT_SHARE, SECURE_GRANT_SHARE, false);
         mComposeNetworkGrant = grantDefault(PREF_GRANT_NETWORK, SECURE_GRANT_NETWORK, false);
         mAutonomyMode = autonomyModeDefault();
-        mComposeUseLiveRealtimeVoice = VOICE_MODE_LIVE_REALTIME_2.equals(voiceModeDefault());
+        String voiceMode = voiceModeDefault();
+        mComposeUseLiveRealtimeVoice = VOICE_MODE_LIVE_REALTIME_2.equals(voiceMode);
+        mComposeUseGeminiLiveVoice = VOICE_MODE_GEMINI_LIVE.equals(voiceMode);
         pushIslandAutonomy();
         if (debugIntentExtrasAllowed()) {
             String apiKey = Settings.Secure.getString(getContentResolver(),
@@ -886,10 +942,16 @@ public class AssistantActivityBackend extends ComponentActivity {
                 mComposeUseRealtime = true;
                 mComposeUseBroker = false;
             }
+            String geminiApiKey = Settings.Secure.getString(getContentResolver(),
+                    SECURE_DEV_GEMINI_API_KEY);
+            mComposeGeminiApiKey = geminiApiKey == null ? "" : geminiApiKey;
         }
         if (mComposeUseLiveRealtimeVoice) {
             mComposeUseRealtime = true;
             mComposeUseRealtime2 = true;
+            mComposeUseBroker = false;
+        }
+        if (mComposeUseGeminiLiveVoice) {
             mComposeUseBroker = false;
         }
     }
@@ -923,7 +985,21 @@ public class AssistantActivityBackend extends ComponentActivity {
         if (VOICE_MODE_LIVE_REALTIME_2.equals(voiceMode)) {
             return VOICE_MODE_LIVE_REALTIME_2;
         }
+        if (VOICE_MODE_GEMINI_LIVE.equals(voiceMode)) {
+            return VOICE_MODE_GEMINI_LIVE;
+        }
         return VOICE_MODE_CLASSIC;
+    }
+
+    private void persistDebugKey(String secureKey, String value) {
+        if (!debugIntentExtrasAllowed()) {
+            return;
+        }
+        try {
+            Settings.Secure.putString(getContentResolver(), secureKey,
+                    value == null ? "" : value);
+        } catch (SecurityException ignored) {
+        }
     }
 
     private void reloadAutonomyMode() {
@@ -994,7 +1070,14 @@ public class AssistantActivityBackend extends ComponentActivity {
         String disclosure = modelRunDisclosure(adapter);
         if (adapter.usesCloud()) {
             ModelEndpointConfig endpointConfig = modelEndpointConfig();
-            if (useLiveRealtimeVoice()) {
+            if (useGeminiLiveVoice()) {
+                disclosure += "\n\nVoice: Gemini Live / "
+                        + GeminiLiveVoiceSession.MODEL
+                        + ". Volume buttons start a live speech-to-speech session. "
+                        + "Mic audio and about one screen frame per second stream to Gemini "
+                        + "while the session is active, and model audio is played back on "
+                        + "the phone.";
+            } else if (useOpenAiLiveRealtimeVoice()) {
                 disclosure += "\n\nVoice: OpenAI Live Realtime 2 / "
                         + OpenAiRealtimeVoiceSession.MODEL
                         + ". Volume buttons start a live speech-to-speech session. "
@@ -1008,6 +1091,13 @@ public class AssistantActivityBackend extends ComponentActivity {
                         + " / " + OpenAiSpeechTranscriber.modelName()
                         + ". " + voicePrivacyDisclosure(endpointConfig);
             }
+        } else if (useGeminiLiveVoice()) {
+            disclosure += "\n\nVoice: Gemini Live / "
+                    + GeminiLiveVoiceSession.MODEL
+                    + ". Volume buttons start a live speech-to-speech session. "
+                    + "Mic audio and about one screen frame per second stream to Gemini "
+                    + "while the session is active, and model audio is played back on "
+                    + "the phone.";
         }
         setModelDisclosureText(disclosure);
     }
@@ -1065,7 +1155,16 @@ public class AssistantActivityBackend extends ComponentActivity {
         if (mListening) {
             return;
         }
-        if (!modelEndpointConfig().isConfigured()) {
+        if (!forceClassic && useGeminiLiveVoice() && geminiApiKey().trim().isEmpty()) {
+            setTaskText("Gemini Live setup is missing. Add a Gemini API key in "
+                    + "Developer settings or via openphone_dev_gemini_api_key.");
+            updateIsland("Setup needed");
+            if (mIslandVoiceLaunch) {
+                finishIslandVoiceLaunch();
+            }
+            return;
+        }
+        if ((!useGeminiLiveVoice() || forceClassic) && !modelEndpointConfig().isConfigured()) {
             setTaskText("Model setup is missing. Open Developer settings and add a "
                     + "broker token or development API key.");
             updateIsland("Setup needed");
@@ -1082,7 +1181,7 @@ public class AssistantActivityBackend extends ComponentActivity {
             return;
         }
         if (!forceClassic && useLiveRealtimeVoice()) {
-            startRealtimeVoiceAgent();
+            startLiveVoiceAgent();
             return;
         }
         Log.i(TAG, "voice start control=" + isControlSurface()
@@ -1134,7 +1233,7 @@ public class AssistantActivityBackend extends ComponentActivity {
             moveTaskToBack(true);
             return;
         }
-        if (mRunningRealtimeVoiceSession != null) {
+        if (mRunningRealtimeVoiceSession != null || mRunningGeminiLiveVoiceSession != null) {
             moveTaskToBack(true);
             return;
         }
@@ -1159,7 +1258,7 @@ public class AssistantActivityBackend extends ComponentActivity {
         }
         if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             if (!mPendingVoiceForceClassic && useLiveRealtimeVoice()) {
-                startRealtimeVoiceAgent();
+                startLiveVoiceAgent();
             } else {
                 listenThenRun(mVoiceHoldToRecord);
             }
@@ -1171,7 +1270,15 @@ public class AssistantActivityBackend extends ComponentActivity {
         }
     }
 
-    private void startRealtimeVoiceAgent() {
+    private void startLiveVoiceAgent() {
+        if (useGeminiLiveVoice()) {
+            startGeminiLiveVoiceAgent();
+        } else {
+            startOpenAiRealtimeVoiceAgent();
+        }
+    }
+
+    private void startOpenAiRealtimeVoiceAgent() {
         if (mRunningRealtimeVoiceSession != null) {
             return;
         }
@@ -1207,7 +1314,7 @@ public class AssistantActivityBackend extends ComponentActivity {
         final int voiceGeneration = ++mVoiceRunGeneration;
         final int runGeneration = ++mAgentRunGeneration;
         final OpenAiRealtimeVoiceSession session = new OpenAiRealtimeVoiceSession(endpointConfig,
-                continuityContextJson(), "yolo".equals(mAutonomyMode));
+                liveVoiceContinuityContextJson(), "yolo".equals(mAutonomyMode));
         mRunningRealtimeVoiceSession = session;
         Log.i(TAG, "live realtime voice start control=" + isControlSurface());
         setTaskText("Live Realtime 2 is listening.");
@@ -1335,6 +1442,170 @@ public class AssistantActivityBackend extends ComponentActivity {
         realtimeThread.start();
     }
 
+    private void startGeminiLiveVoiceAgent() {
+        if (mRunningGeminiLiveVoiceSession != null) {
+            return;
+        }
+        final String apiKey = geminiApiKey();
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            String setupMessage = "Gemini Live needs a Gemini API key.";
+            setTaskText(setupMessage);
+            updateIsland("Setup needed");
+            if (mIslandVoiceLaunch) {
+                finishIslandVoiceLaunch();
+            }
+            return;
+        }
+        if (mAgentManager == null) {
+            String setupMessage = "OpenPhone system service is unavailable.";
+            setTaskText(setupMessage);
+            updateIsland("Unavailable");
+            if (mIslandVoiceLaunch) {
+                finishIslandVoiceLaunch();
+            }
+            return;
+        }
+        if (isControlSurface()) {
+            sActiveControlRunner = this;
+        }
+        mListening = true;
+        mVoiceHoldToRecord = false;
+        mVoiceCaptureFinishRequested = false;
+        mRealtimeVoiceErrorShown = false;
+        mLastVoiceStartUptimeMillis = SystemClock.uptimeMillis();
+        clearVoicePipelineProtection();
+        mAgentRunCancelled = false;
+        final int voiceGeneration = ++mVoiceRunGeneration;
+        final int runGeneration = ++mAgentRunGeneration;
+        final GeminiLiveVoiceSession session = new GeminiLiveVoiceSession(apiKey,
+                liveVoiceContinuityContextJson(), "yolo".equals(mAutonomyMode));
+        mRunningGeminiLiveVoiceSession = session;
+        Log.i(TAG, "gemini live voice start control=" + isControlSurface());
+        setTaskText("Gemini Live is listening.");
+        updateIsland("Live");
+        updateComposerActionButton();
+        if (mIslandVoiceLaunch) {
+            getWindow().getDecorView().post(new Runnable() {
+                @Override
+                public void run() {
+                    moveTaskToBack(true);
+                }
+            });
+        }
+        Thread realtimeThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String taskId = null;
+                try {
+                    String response = mAgentManager.startTask(taskRequestJson(
+                            "Gemini Live voice session"));
+                    taskId = parseString(response, "task_id");
+                    if (taskId == null || taskId.isEmpty()) {
+                        postRealtimeVoiceError(voiceGeneration,
+                                "Could not start the Gemini Live voice task.");
+                        postRealtimeVoiceStopped(voiceGeneration, null);
+                        return;
+                    }
+                    final String liveTaskId = taskId;
+                    mRealtimeVoiceTaskId = liveTaskId;
+                    Log.i(TAG, "gemini live task started id=" + liveTaskId);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (voiceGeneration == mVoiceRunGeneration) {
+                                mActiveTaskId = liveTaskId;
+                                mActiveTaskGoal = "Gemini Live voice session";
+                                updateComposerActionButton();
+                            }
+                        }
+                    });
+                    FrameworkToolExecutor toolExecutor = new FrameworkToolExecutor(
+                            AssistantActivityBackend.this, mAgentManager);
+                    session.run(liveTaskId, new ModelAdapter.ToolExecutor() {
+                        @Override
+                        public String callTool(String toolName, String argumentsJson) {
+                            if (isCancelled()) {
+                                return "{\"status\":\"cancelled\",\"reason\":\"user_stopped\"}";
+                            }
+                            try {
+                                JSONObject toolArguments = new JSONObject(argumentsJson);
+                                String yoloBypass = yoloConfirmationBypass(liveTaskId,
+                                        toolExecutor, toolName, toolArguments);
+                                if (yoloBypass != null) {
+                                    return yoloBypass;
+                                }
+                                String dryRunPreview = dryRunPreview(toolName, toolArguments);
+                                if (dryRunPreview != null) {
+                                    return dryRunPreview;
+                                }
+                                String grantDenied = preflightDenial(toolName, toolArguments);
+                                if (grantDenied != null) {
+                                    return grantDenied;
+                                }
+                                movePointerFromTool(toolName, toolArguments);
+                                if (isCancelled()) {
+                                    return "{\"status\":\"cancelled\",\"reason\":\"user_stopped\"}";
+                                }
+                                return toolExecutor.execute(liveTaskId, toolName, toolArguments);
+                            } catch (JSONException e) {
+                                return "{\"status\":\"error\",\"reason\":\"bad_tool_json\"}";
+                            }
+                        }
+
+                        @Override
+                        public boolean isCancelled() {
+                            return mAgentRunCancelled
+                                    || runGeneration != mAgentRunGeneration
+                                    || voiceGeneration != mVoiceRunGeneration
+                                    || Thread.currentThread().isInterrupted();
+                        }
+                    }, new GeminiLiveVoiceSession.Callback() {
+                        @Override
+                        public void onStatus(String status) {
+                            postRealtimeVoiceStatus(voiceGeneration, status);
+                        }
+
+                        @Override
+                        public void onUserTranscript(String transcript) {
+                            postRealtimeVoiceUserTranscript(voiceGeneration, transcript);
+                        }
+
+                        @Override
+                        public void onAssistantTranscript(String transcript) {
+                            postRealtimeVoiceAssistantTranscript(voiceGeneration, transcript);
+                        }
+
+                        @Override
+                        public void onToolCall(String toolName) {
+                            postRealtimeVoiceStatus(voiceGeneration,
+                                    "Using " + (toolName == null ? "tool" : toolName));
+                        }
+
+                        @Override
+                        public void onToolResult(String toolName, String resultJson) {
+                            postRealtimeVoiceToolResult(voiceGeneration, toolName, resultJson);
+                        }
+
+                        @Override
+                        public void onError(String message) {
+                            postRealtimeVoiceError(voiceGeneration, message);
+                        }
+
+                        @Override
+                        public void onStopped() {
+                            postRealtimeVoiceStopped(voiceGeneration, liveTaskId);
+                        }
+                    });
+                } catch (RuntimeException e) {
+                    postRealtimeVoiceError(voiceGeneration, e.getClass().getSimpleName());
+                    postRealtimeVoiceStopped(voiceGeneration, taskId);
+                }
+            }
+        }, "OpenPhoneGeminiLiveVoice");
+        mAgentThread = realtimeThread;
+        realtimeThread.start();
+    }
+
     private void postRealtimeVoiceStatus(final int voiceGeneration, final String status) {
         runOnUiThread(new Runnable() {
             @Override
@@ -1343,7 +1614,7 @@ public class AssistantActivityBackend extends ComponentActivity {
                     return;
                 }
                 String clean = status == null || status.trim().isEmpty()
-                        ? "Live Realtime 2" : status.trim();
+                        ? liveVoiceLabel() : status.trim();
                 setTaskText(clean);
                 updateIsland("Live");
             }
@@ -1361,7 +1632,7 @@ public class AssistantActivityBackend extends ComponentActivity {
                 }
                 appendConversation("You", transcript.trim());
                 if (mPointerOverlayController != null) {
-                    mPointerOverlayController.setIslandState("realtime", "Live Realtime 2");
+                    mPointerOverlayController.setIslandState("realtime", liveVoiceLabel());
                 }
             }
         });
@@ -1378,7 +1649,7 @@ public class AssistantActivityBackend extends ComponentActivity {
                 }
                 appendConversation("OpenPhone", transcript.trim());
                 if (mPointerOverlayController != null) {
-                    mPointerOverlayController.setIslandState("realtime", "Live Realtime 2");
+                    mPointerOverlayController.setIslandState("realtime", liveVoiceLabel());
                 }
             }
         });
@@ -1405,7 +1676,7 @@ public class AssistantActivityBackend extends ComponentActivity {
                 if (voiceGeneration != mVoiceRunGeneration) {
                     return;
                 }
-                String reply = "Live Realtime 2 failed."
+                String reply = liveVoiceLabel() + " failed."
                         + (message == null || message.trim().isEmpty()
                                 ? "" : "\n\n" + message.trim());
                 Log.w(TAG, "live realtime voice error: " + previewForLog(message));
@@ -1428,6 +1699,7 @@ public class AssistantActivityBackend extends ComponentActivity {
                 mListening = false;
                 mIslandVoiceLaunch = false;
                 mRunningRealtimeVoiceSession = null;
+                mRunningGeminiLiveVoiceSession = null;
                 mAgentThread = null;
                 if (taskId != null && taskId.equals(mRealtimeVoiceTaskId)) {
                     mRealtimeVoiceTaskId = null;
@@ -2281,6 +2553,10 @@ public class AssistantActivityBackend extends ComponentActivity {
         }
     }
 
+    private String liveVoiceContinuityContextJson() {
+        return "{}";
+    }
+
     private void recordContextAgentEvent(String eventType, String title, String text,
             String taskId, String payloadJson) {
         if (mContextIndexStore == null) {
@@ -2534,6 +2810,15 @@ public class AssistantActivityBackend extends ComponentActivity {
                 Log.w(TAG, "live realtime cancel failed: " + e.getClass().getSimpleName());
             }
             mRunningRealtimeVoiceSession = null;
+        }
+        GeminiLiveVoiceSession geminiLiveVoiceSession = mRunningGeminiLiveVoiceSession;
+        if (geminiLiveVoiceSession != null) {
+            try {
+                geminiLiveVoiceSession.cancel();
+            } catch (RuntimeException e) {
+                Log.w(TAG, "gemini live cancel failed: " + e.getClass().getSimpleName());
+            }
+            mRunningGeminiLiveVoiceSession = null;
         }
         mActiveTaskId = null;
         mActiveTaskGoal = null;

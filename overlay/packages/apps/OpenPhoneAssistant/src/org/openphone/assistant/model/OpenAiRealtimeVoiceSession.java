@@ -17,11 +17,9 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import org.openphone.assistant.actions.ToolCatalog;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.URI;
 import java.net.SocketTimeoutException;
@@ -34,6 +32,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
@@ -55,7 +54,7 @@ public final class OpenAiRealtimeVoiceSession {
 
     private static final int SAMPLE_RATE = 24000;
     private static final long CONNECT_TIMEOUT_MS = 20000;
-    private static final long EVENT_TIMEOUT_MS = 120000;
+    private static final long EVENT_TIMEOUT_MS = 2000;
     private static final long SELF_ECHO_GUARD_MS = 900;
     private static final long PLAYBACK_DRAIN_GRACE_MS = 350;
     private static final long MAX_PLAYBACK_DRAIN_MS = 6000;
@@ -65,21 +64,29 @@ public final class OpenAiRealtimeVoiceSession {
     private static final long INTERRUPTED_AUDIO_DROP_GRACE_MS = 2500;
     private static final double LOCAL_BARGE_IN_RMS = 1700.0;
     private static final double SERVER_BARGE_IN_RMS = 900.0;
-    private static final int AUTO_SCREEN_MAX_TEXT_CHARS = 4200;
-    private static final int AUTO_SCREEN_MAX_ARRAY_ITEMS = 18;
+    private static final int AUTO_SCREEN_MAX_TEXT_CHARS = 8000;
+    private static final int AUTO_SCREEN_MAX_ARRAY_ITEMS = 40;
+    private static final long SCREEN_CACHE_INTERVAL_MS = 850;
+    private static final long SCREEN_CACHE_MAX_AGE_MS = 2200;
+    private static final long ACTION_RESPONSE_STALL_MS = 9000;
+    private static final long STALL_CANCEL_GRACE_MS = 1800;
+    private static final int ACTION_RESPONSE_STALL_MAX_RECOVERIES = 2;
     private static final String REALTIME_URL =
             "wss://api.openai.com/v1/realtime?model=" + MODEL;
 
     private final ModelEndpointConfig mEndpointConfig;
+    private final ReentrantLock mToolExecutorLock = new ReentrantLock();
     private final Set<String> mCompletedCallIds = new HashSet<>();
     private final Set<String> mTruncatedAssistantItemIds = new HashSet<>();
     private final Set<String> mMutedResponseIds = new HashSet<>();
     private final Set<String> mMutedAssistantItemIds = new HashSet<>();
+    private final OutcomeTracker mOutcomeTracker = new OutcomeTracker();
     private volatile boolean mCancelled;
     private volatile RealtimeWebSocket mSocket;
     private volatile AudioRecord mRecorder;
     private volatile AudioTrack mPlayer;
     private volatile Thread mAudioThread;
+    private volatile Thread mScreenCacheThread;
     private volatile AcousticEchoCanceler mEchoCanceler;
     private volatile NoiseSuppressor mNoiseSuppressor;
     private volatile AutomaticGainControl mAutomaticGainControl;
@@ -97,6 +104,14 @@ public final class OpenAiRealtimeVoiceSession {
     private volatile String mCurrentAssistantItemId;
     private volatile int mCurrentAssistantContentIndex;
     private volatile long mCurrentAssistantItemStartFrame;
+    private volatile CachedScreenContext mCachedScreenContext;
+    private String mLastMessageSendResult = "";
+    private boolean mActionResponseOutstanding;
+    private boolean mRetryActionAfterStallCancel;
+    private long mActionResponseCreatedUptimeMillis;
+    private long mLastActionResponseActivityUptimeMillis;
+    private long mStallCancelRequestedUptimeMillis;
+    private int mActionResponseStallRecoveries;
     private final String mContinuityContextJson;
     private final boolean mFullYolo;
 
@@ -149,6 +164,10 @@ public final class OpenAiRealtimeVoiceSession {
         if (audioThread != null) {
             audioThread.interrupt();
         }
+        Thread screenCacheThread = mScreenCacheThread;
+        if (screenCacheThread != null) {
+            screenCacheThread.interrupt();
+        }
     }
 
     public void run(String taskId, ModelAdapter.ToolExecutor executor, Callback callback) {
@@ -172,6 +191,7 @@ public final class OpenAiRealtimeVoiceSession {
             mSocket = socket;
             callback.onStatus("Starting live voice");
             socket.send(sessionUpdateEvent());
+            startScreenCache(executor);
             startAudioInput(socket, callback);
             Log.i(TAG, "audio streaming started");
             callback.onStatus("Live Realtime 2");
@@ -180,7 +200,13 @@ public final class OpenAiRealtimeVoiceSession {
                     JSONObject event = socket.readJson(EVENT_TIMEOUT_MS);
                     handleEvent(socket, taskId, executor, callback, event);
                 } catch (SocketTimeoutException ignored) {
-                    callback.onStatus("Live Realtime 2");
+                    boolean recovered = maybeRecoverStalledActionResponse(socket, executor,
+                            callback);
+                    if (!recovered) {
+                        callback.onStatus(mActionResponseOutstanding
+                                || mRetryActionAfterStallCancel
+                                        ? "Thinking" : "Live Realtime 2");
+                    }
                 }
             }
         } catch (IOException | JSONException | RuntimeException e) {
@@ -226,10 +252,27 @@ public final class OpenAiRealtimeVoiceSession {
                         .put("output", output.put("speed", 1.18)))
                 .put("reasoning", new JSONObject().put("effort", "low"))
                 .put("tool_choice", "auto")
-                .put("tools", ToolCatalog.get().realtimeToolDefinitions());
+                .put("tools", realtimeToolDefinitionsForMode(mFullYolo));
         return new JSONObject()
                 .put("type", "session.update")
                 .put("session", session);
+    }
+
+    private static JSONArray realtimeToolDefinitionsForMode(boolean fullYolo)
+            throws JSONException {
+        JSONArray allTools = ToolCatalog.get().realtimeToolDefinitions();
+        if (!fullYolo) {
+            return allTools;
+        }
+        JSONArray tools = new JSONArray();
+        for (int i = 0; i < allTools.length(); i++) {
+            JSONObject tool = allTools.optJSONObject(i);
+            if (tool == null || "ask_user_confirmation".equals(tool.optString("name", ""))) {
+                continue;
+            }
+            tools.put(tool);
+        }
+        return tools;
     }
 
     private static String liveVoiceInstructions(String continuityContextJson, boolean fullYolo) {
@@ -261,7 +304,22 @@ public final class OpenAiRealtimeVoiceSession {
                 + "reasonable choice and continue. Never claim you cannot use the phone "
                 + "when a relevant tool exists. Do not ask for approval for ordinary app "
                 + "navigation, typing fields, searching, choosing visible options, or "
-                + "preparing a workflow. "
+                + "preparing a workflow. Never tell the user to open an app manually. "
+                + "When the user explicitly asks you to send a text/SMS/message, use "
+                + "messages_send directly after resolving the recipient; do not draft and "
+                + "ask for approval in full YOLO. Never say a message was sent unless "
+                + "messages_send returned status=messages.sent. "
+                + "If an app is missing, closed, backgrounded, or uncertain, call open_app "
+                + "or get_screen and keep acting. When the user names a specific app or "
+                + "service, pass that exact app/service name to open_app rather than a "
+                + "generic category label. For media requests like playing an artist, "
+                + "song, playlist, or album, "
+                + "opening the app is only setup: search, select/play, and verify playback "
+                + "before finish_task. For custom-rendered workflows, do not fail just "
+                + "because the accessibility tree is sparse or a screen looks visually "
+                + "similar after a tap; use the screenshot, visible text, and raw "
+                + "coordinates. If a visible control advances the user's requested "
+                + "workflow, use it. "
                 + approvalResultInstruction(fullYolo)
                 + "Default to silence while taking tool actions. Do not narrate plans, tool "
                 + "names, uncertainty, or obvious UI state. If you must speak mid-task, use "
@@ -372,10 +430,33 @@ public final class OpenAiRealtimeVoiceSession {
                 .put("audio", Base64.encodeToString(chunk, Base64.NO_WRAP)));
     }
 
+    private void startScreenCache(final ModelAdapter.ToolExecutor executor) {
+        if (executor == null) {
+            return;
+        }
+        Thread screenThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (!mCancelled && !Thread.currentThread().isInterrupted()
+                        && !executor.isCancelled()) {
+                    refreshScreenCache(executor, "background live voice screen cache", false);
+                    try {
+                        Thread.sleep(SCREEN_CACHE_INTERVAL_MS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        }, "OpenPhoneRealtimeScreenCache");
+        mScreenCacheThread = screenThread;
+        screenThread.start();
+    }
+
     private void handleEvent(RealtimeWebSocket socket, String taskId,
             ModelAdapter.ToolExecutor executor, Callback callback, JSONObject event)
             throws IOException, JSONException {
         String type = event.optString("type");
+        markActionResponseActivity(type);
         if ("error".equals(type)) {
             JSONObject error = event.optJSONObject("error");
             if (error != null && "conversation_already_has_active_response".equals(
@@ -409,16 +490,19 @@ public final class OpenAiRealtimeVoiceSession {
         }
         if ("input_audio_buffer.committed".equals(type)) {
             callback.onStatus("Observing");
+            resetTurnToolState();
             appendAutoScreenContext(socket, executor,
-                    "fresh screen after the user's latest voice turn");
+                    "fresh screen after the user's latest voice turn", false);
             sendActionResponseCreate(socket, "act on the user's latest voice request");
             callback.onStatus("Thinking");
-            Log.i(TAG, "required action response.create sent after auto screen context");
+            Log.i(TAG, "required action response.create sent after cached screen context");
             return;
         }
         if ("conversation.item.input_audio_transcription.done".equals(type)) {
             String transcript = event.optString("transcript", "").trim();
             if (!transcript.isEmpty()) {
+                Log.i(TAG, "user transcript=" + preview(transcript));
+                mOutcomeTracker.observeUserTranscript(transcript);
                 callback.onUserTranscript(transcript);
             }
             return;
@@ -447,6 +531,10 @@ public final class OpenAiRealtimeVoiceSession {
             mPendingToolResponseCreate = false;
             mPendingAssistantTranscript = null;
             stopPlayback();
+            if (mRetryActionAfterStallCancel) {
+                sendRecoveryAfterStallCancel(socket, executor, callback,
+                        "response_cancelled after stalled action response");
+            }
             return;
         }
         RealtimeFunctionCall call = functionCallFromEvent(event);
@@ -465,6 +553,10 @@ public final class OpenAiRealtimeVoiceSession {
                 mPendingToolResponseCreate = false;
                 mPendingAssistantTranscript = null;
                 stopPlayback();
+                if (mRetryActionAfterStallCancel) {
+                    sendRecoveryAfterStallCancel(socket, executor, callback,
+                            "response_done_cancelled after stalled action response");
+                }
                 return;
             }
             if (response != null) {
@@ -475,6 +567,7 @@ public final class OpenAiRealtimeVoiceSession {
                 }
             }
             if (mPendingTerminalToolResponseCreate) {
+                mActionResponseOutstanding = false;
                 mPendingToolResponseCreate = false;
                 mPendingTerminalToolResponseCreate = false;
                 sendFinalResponseCreate(socket);
@@ -489,6 +582,7 @@ public final class OpenAiRealtimeVoiceSession {
             }
             drainPlayback("response_done");
             flushAssistantTranscript(callback);
+            mActionResponseOutstanding = false;
         }
     }
 
@@ -511,6 +605,17 @@ public final class OpenAiRealtimeVoiceSession {
         ParseResult parsedArguments = parseArguments(call.arguments);
         JSONObject arguments = parsedArguments.arguments;
         if (parsedArguments.recoveredFromError) {
+            if (mFullYolo && "ask_user_confirmation".equals(call.name)) {
+                Log.w(TAG, "malformed approval call rejected in full yolo args="
+                        + preview(call.arguments));
+                socket.send(new JSONObject()
+                        .put("type", "conversation.item.create")
+                        .put("item", new JSONObject()
+                                .put("type", "function_call_output")
+                                .put("call_id", call.callId)
+                                .put("output", yoloApprovalRejectedJson())));
+                return true;
+            }
             if (isIgnoringPartialFunctionCalls()) {
                 Log.i(TAG, "ignoring partial function call after interruption name="
                         + call.name + " args=" + preview(call.arguments));
@@ -526,36 +631,81 @@ public final class OpenAiRealtimeVoiceSession {
                             .put("output", errorJson("bad_tool_json"))));
             return true;
         }
+        Log.i(TAG, "tool call name=" + call.name + " args=" + preview(arguments.toString()));
         callback.onToolCall(call.name);
         ensureToolReason(call.name, arguments);
+        mOutcomeTracker.observeToolCall(call.name, arguments, mFullYolo,
+                cachedForegroundPackage());
         String output;
-        if (!ToolCatalog.get().isAllowedTool(call.name)) {
+        boolean yoloApprovalRejected = false;
+        boolean pendingOutcomeRejected = false;
+        if (mFullYolo && "ask_user_confirmation".equals(call.name)) {
+            yoloApprovalRejected = true;
+            output = yoloApprovalRejectedJson();
+            Log.w(TAG, "approval tool rejected in full yolo args="
+                    + preview(arguments.toString()));
+        } else if (ToolCatalog.get().isTerminalTool(call.name)
+                && mOutcomeTracker.shouldBlockTerminalTool(call.name)) {
+            pendingOutcomeRejected = true;
+            output = mOutcomeTracker.pendingOutcomeBlockedJson(call.name);
+            Log.w(TAG, "terminal rejected by pending outcomes tool=" + call.name
+                    + " pending=" + mOutcomeTracker.pendingSummary()
+                    + " lastMessageSendResult=" + preview(mLastMessageSendResult)
+                    + " args=" + preview(arguments.toString()));
+        } else if (!ToolCatalog.get().isAllowedTool(call.name)) {
             output = errorJson("unknown_model_tool:" + call.name);
         } else if (executor.isCancelled()) {
             output = "{\"status\":\"cancelled\",\"reason\":\"user_stopped\"}";
         } else {
-            output = executor.callTool(call.name, arguments.toString());
+            mToolExecutorLock.lock();
+            try {
+                output = executor.callTool(call.name, arguments.toString());
+            } finally {
+                mToolExecutorLock.unlock();
+            }
         }
         callback.onToolResult(call.name, output == null ? "" : output);
+        rememberToolOutcome(call.name, output);
         socket.send(new JSONObject()
                 .put("type", "conversation.item.create")
                 .put("item", new JSONObject()
                         .put("type", "function_call_output")
                         .put("call_id", call.callId)
                         .put("output", output == null ? "" : output)));
+        mLastActionResponseActivityUptimeMillis = SystemClock.uptimeMillis();
+        if (yoloApprovalRejected || pendingOutcomeRejected) {
+            return true;
+        }
         if (ToolCatalog.get().isTerminalTool(call.name)) {
             mPendingTerminalToolResponseCreate = true;
             return true;
         }
         if (ToolCatalog.get().drivesVisibleUi(call.name) && !executor.isCancelled()) {
             appendAutoScreenContext(socket, executor,
-                    "fresh screen after " + call.name);
+                    "fresh screen after " + call.name, true);
+            mOutcomeTracker.observeScreen(mCachedScreenContext);
         }
         return true;
     }
 
     private void sendActionResponseCreate(RealtimeWebSocket socket, String purpose)
             throws IOException, JSONException {
+        sendActionResponseCreate(socket, purpose, false);
+    }
+
+    private void sendActionResponseCreate(RealtimeWebSocket socket, String purpose,
+            boolean recovery)
+            throws IOException, JSONException {
+        long now = SystemClock.uptimeMillis();
+        if (recovery) {
+            mActionResponseStallRecoveries++;
+        } else {
+            mActionResponseStallRecoveries = 0;
+        }
+        mActionResponseOutstanding = true;
+        mRetryActionAfterStallCancel = false;
+        mActionResponseCreatedUptimeMillis = now;
+        mLastActionResponseActivityUptimeMillis = now;
         socket.send(new JSONObject()
                 .put("type", "response.create")
                 .put("response", new JSONObject()
@@ -564,12 +714,45 @@ public final class OpenAiRealtimeVoiceSession {
                         .put("max_output_tokens", 500)
                         .put("instructions", "This is a phone-control turn: call exactly one "
                                 + "tool now. Do not speak, narrate, or explain before the tool. "
-                                + "Use the automatic screen context already provided. "
+                                + "Use the automatic screen context if it was provided; call "
+                                + "get_screen only when that context is missing or stale. "
+                                + "Never ask the user to open an app manually; use open_app "
+                                + "or continue with visible UI controls yourself. "
+                                + (mFullYolo ? "Full YOLO is enabled and approval is not "
+                                        + "available; if the user asked to send a message, "
+                                        + "call messages_send directly. Never report that "
+                                        + "a message was sent unless messages_send returned "
+                                        + "status=messages.sent. " : "")
+                                + "Do not finish after merely opening an app when the user "
+                                + "asked to play, search, select, order, book, post, or send. "
+                                + "For custom-rendered app flows, do not fail because the "
+                                + "screen looks similar after a tap; use screenshot coordinates "
+                                + "and continue through visible controls that advance the "
+                                + "requested workflow until a real visible blocker appears. "
+                                + (recovery ? "Previous response stalled without a tool; "
+                                        + "recover by calling one concrete phone tool now. " : "")
                                 + (purpose == null ? "" : purpose))));
+    }
+
+    private void resetTurnToolState() {
+        mLastMessageSendResult = "";
+        mActionResponseOutstanding = false;
+        mRetryActionAfterStallCancel = false;
+        mActionResponseStallRecoveries = 0;
+    }
+
+    private void rememberToolOutcome(String toolName, String output) {
+        mOutcomeTracker.observeToolResult(toolName, output, mCachedScreenContext);
+        if (!"messages_send".equals(toolName)) {
+            return;
+        }
+        mLastMessageSendResult = output == null ? "" : output;
     }
 
     private void sendFinalResponseCreate(RealtimeWebSocket socket)
             throws IOException, JSONException {
+        mActionResponseOutstanding = false;
+        mRetryActionAfterStallCancel = false;
         socket.send(new JSONObject()
                 .put("type", "response.create")
                 .put("response", new JSONObject()
@@ -580,28 +763,146 @@ public final class OpenAiRealtimeVoiceSession {
                                 + "No explanation, no recap, no tool names.")));
     }
 
+    private void markActionResponseActivity(String eventType) {
+        if (eventType != null && eventType.startsWith("response.")) {
+            mLastActionResponseActivityUptimeMillis = SystemClock.uptimeMillis();
+        }
+    }
+
+    private boolean maybeRecoverStalledActionResponse(RealtimeWebSocket socket,
+            ModelAdapter.ToolExecutor executor, Callback callback)
+            throws IOException, JSONException {
+        if (socket == null || executor == null || executor.isCancelled() || mCancelled) {
+            return false;
+        }
+        long now = SystemClock.uptimeMillis();
+        if (mRetryActionAfterStallCancel) {
+            if (now - mStallCancelRequestedUptimeMillis >= STALL_CANCEL_GRACE_MS) {
+                Log.w(TAG, "stalled action response cancel timed out; retrying response.create");
+                sendRecoveryAfterStallCancel(socket, executor, callback,
+                        "stalled action response cancel timed out");
+                return true;
+            }
+            return false;
+        }
+        if (!mActionResponseOutstanding) {
+            return false;
+        }
+        long lastActivity = Math.max(mActionResponseCreatedUptimeMillis,
+                mLastActionResponseActivityUptimeMillis);
+        long idleMs = now - lastActivity;
+        if (idleMs < ACTION_RESPONSE_STALL_MS) {
+            return false;
+        }
+        if (mActionResponseStallRecoveries >= ACTION_RESPONSE_STALL_MAX_RECOVERIES) {
+            Log.w(TAG, "stalled action response exceeded recovery limit idleMs=" + idleMs);
+            mActionResponseOutstanding = false;
+            callback.onStatus("Listening");
+            return true;
+        }
+        Log.w(TAG, "stalled action response detected idleMs=" + idleMs
+                + " recovery=" + (mActionResponseStallRecoveries + 1));
+        callback.onStatus("Recovering");
+        JSONObject cancel = new JSONObject().put("type", "response.cancel");
+        if (mCurrentResponseId != null && !mCurrentResponseId.isEmpty()) {
+            cancel.put("response_id", mCurrentResponseId);
+        }
+        socket.send(cancel);
+        mRetryActionAfterStallCancel = true;
+        mStallCancelRequestedUptimeMillis = now;
+        mActionResponseOutstanding = false;
+        return true;
+    }
+
+    private void sendRecoveryAfterStallCancel(RealtimeWebSocket socket,
+            ModelAdapter.ToolExecutor executor, Callback callback, String reason)
+            throws IOException, JSONException {
+        mRetryActionAfterStallCancel = false;
+        if (mPendingTerminalToolResponseCreate) {
+            mPendingToolResponseCreate = false;
+            mPendingTerminalToolResponseCreate = false;
+            sendFinalResponseCreate(socket);
+            Log.i(TAG, "final response.create sent after stalled terminal response recovery");
+            return;
+        }
+        appendAutoScreenContext(socket, executor,
+                "fresh screen after stalled response recovery", false);
+        sendActionResponseCreate(socket, reason == null || reason.trim().isEmpty()
+                ? "recover from stalled response; call a concrete phone tool now"
+                : reason, true);
+        callback.onStatus("Thinking");
+        Log.i(TAG, "required action response.create sent after stalled response recovery");
+    }
+
     private void appendAutoScreenContext(RealtimeWebSocket socket,
-            ModelAdapter.ToolExecutor executor, String reason) {
+            ModelAdapter.ToolExecutor executor, String reason, boolean forceRefresh) {
         if (socket == null || executor == null || executor.isCancelled()) {
             return;
         }
         try {
+            CachedScreenContext screenContext = forceRefresh
+                    ? refreshScreenCache(executor, reason, true) : mCachedScreenContext;
+            long ageMs = screenContext == null ? Long.MAX_VALUE
+                    : SystemClock.uptimeMillis() - screenContext.uptimeMillis;
+            if (screenContext == null || ageMs > SCREEN_CACHE_MAX_AGE_MS) {
+                Log.i(TAG, "auto screen context skipped stale ageMs="
+                        + (ageMs == Long.MAX_VALUE ? -1 : ageMs)
+                        + " reason=" + preview(reason));
+                return;
+            }
+            socket.send(autoScreenConversationItem(screenContext.screenJson, reason));
+            Log.i(TAG, "auto screen context appended cached ageMs=" + ageMs
+                    + " reason=" + preview(reason)
+                    + " chars=" + screenContext.rawLength);
+        } catch (JSONException | IOException | RuntimeException e) {
+            Log.w(TAG, "auto screen context failed", e);
+        }
+    }
+
+    private CachedScreenContext refreshScreenCache(ModelAdapter.ToolExecutor executor,
+            String reason, boolean waitForToolLock) {
+        if (executor == null || executor.isCancelled() || mCancelled) {
+            return null;
+        }
+        boolean locked = false;
+        try {
+            if (waitForToolLock) {
+                mToolExecutorLock.lock();
+                locked = true;
+            } else {
+                locked = mToolExecutorLock.tryLock();
+                if (!locked) {
+                    return null;
+                }
+            }
+            long start = SystemClock.uptimeMillis();
             JSONObject arguments = new JSONObject()
                     .put("include_screenshot", true)
                     .put("include_activity", true)
-                    .put("include_ui_tree", true)
-                    .put("max_dimension", 256)
-                    .put("quality", 35)
+                    .put("include_ui_tree", false)
+                    .put("max_dimension", 384)
+                    .put("quality", 45)
                     .put("reason", reason == null || reason.trim().isEmpty()
                             ? "refresh current visible phone screen for realtime context"
                             : reason);
             String screen = executor.callTool("get_screen", arguments.toString());
             JSONObject screenJson = new JSONObject(screen == null ? "{}" : screen);
-            socket.send(autoScreenConversationItem(screenJson, reason));
-            Log.i(TAG, "auto screen context appended reason=" + preview(reason)
-                    + " chars=" + (screen == null ? 0 : screen.length()));
-        } catch (JSONException | IOException | RuntimeException e) {
-            Log.w(TAG, "auto screen context failed", e);
+            CachedScreenContext screenContext = new CachedScreenContext(screenJson,
+                    screen == null ? 0 : screen.length(), SystemClock.uptimeMillis());
+            mCachedScreenContext = screenContext;
+            mOutcomeTracker.observeScreen(screenContext);
+            Log.i(TAG, "screen cache refreshed ms="
+                    + (SystemClock.uptimeMillis() - start)
+                    + " chars=" + screenContext.rawLength
+                    + " reason=" + preview(reason));
+            return screenContext;
+        } catch (JSONException | RuntimeException e) {
+            Log.w(TAG, "screen cache refresh failed", e);
+            return null;
+        } finally {
+            if (locked) {
+                mToolExecutorLock.unlock();
+            }
         }
     }
 
@@ -1110,6 +1411,48 @@ public final class OpenAiRealtimeVoiceSession {
         arguments.put("reason", "Live voice task step requested by the user.");
     }
 
+    private String cachedForegroundPackage() {
+        CachedScreenContext screenContext = mCachedScreenContext;
+        JSONObject screenJson = screenContext == null ? null : screenContext.screenJson;
+        if (screenJson == null) {
+            return "";
+        }
+        String foreground = screenJson.optString("foreground_package", "");
+        JSONObject context = screenJson.optJSONObject("context");
+        if (foreground.isEmpty() && context != null) {
+            foreground = context.optString("foreground_package", "");
+        }
+        return foreground.toLowerCase(Locale.US);
+    }
+
+    private static JSONObject parseObjectOrEmpty(String json) {
+        if (json == null || json.trim().isEmpty()) {
+            return new JSONObject();
+        }
+        try {
+            return new JSONObject(json);
+        } catch (JSONException e) {
+            return new JSONObject();
+        }
+    }
+
+    private static String yoloApprovalRejectedJson() {
+        try {
+            return new JSONObject()
+                    .put("status", "error")
+                    .put("reason", "approval_unavailable_in_full_yolo")
+                    .put("instruction", "Full YOLO is enabled. Do not ask for approval "
+                            + "and do not fail because approval is unavailable. Continue "
+                            + "with the concrete tool that performs the requested action. "
+                            + "For an explicit SMS/text request, use messages_send with "
+                            + "the resolved recipient phone number and body.")
+                    .toString();
+        } catch (JSONException e) {
+            return "{\"status\":\"error\","
+                    + "\"reason\":\"approval_unavailable_in_full_yolo\"}";
+        }
+    }
+
     private static String errorJson(String reason) {
         try {
             return new JSONObject()
@@ -1127,6 +1470,145 @@ public final class OpenAiRealtimeVoiceSession {
         }
         String cleaned = value.replace('\n', ' ').replace('\r', ' ').trim();
         return cleaned.length() <= 120 ? cleaned : cleaned.substring(0, 120) + "...";
+    }
+
+    private static final class OutcomeTracker {
+        private boolean mPendingMessageSend;
+        private boolean mMessageSendAttempted;
+        private boolean mMessageSendBlocked;
+        private String mLastMessageSendResult = "";
+
+        void observeUserTranscript(String transcript) {
+            String text = normalize(transcript);
+            if (text.isEmpty()) {
+                return;
+            }
+            if (containsAny(text, "cancel that", "stop that", "never mind", "nevermind",
+                    "forget it")) {
+                reset();
+                return;
+            }
+            if (isMessageSendRequest(text)) {
+                mPendingMessageSend = true;
+                mMessageSendAttempted = false;
+                mMessageSendBlocked = false;
+            }
+        }
+
+        void observeToolCall(String toolName, JSONObject arguments, boolean fullYolo,
+                String foregroundPackage) {
+            if ("messages_send".equals(toolName)) {
+                mPendingMessageSend = true;
+                mMessageSendAttempted = true;
+                mMessageSendBlocked = false;
+                return;
+            }
+            if ("messages_draft".equals(toolName) && (fullYolo || mPendingMessageSend)) {
+                mPendingMessageSend = true;
+                return;
+            }
+        }
+
+        void observeToolResult(String toolName, String output,
+                CachedScreenContext screenContext) {
+            if ("messages_send".equals(toolName)) {
+                mLastMessageSendResult = output == null ? "" : output;
+                JSONObject result = parseObjectOrEmpty(output);
+                if ("messages.sent".equals(result.optString("status", ""))) {
+                    mPendingMessageSend = false;
+                    mMessageSendBlocked = false;
+                } else {
+                    mPendingMessageSend = true;
+                    mMessageSendBlocked = true;
+                }
+            }
+        }
+
+        void observeScreen(CachedScreenContext screenContext) {
+        }
+
+        boolean shouldBlockTerminalTool(String toolName) {
+            return !pendingForTerminalTool(toolName).isEmpty();
+        }
+
+        String pendingOutcomeBlockedJson(String toolName) {
+            List<String> pending = pendingForTerminalTool(toolName);
+            try {
+                JSONArray pendingJson = new JSONArray();
+                for (String item : pending) {
+                    pendingJson.put(item);
+                }
+                JSONObject result = new JSONObject()
+                        .put("status", "error")
+                        .put("reason", "terminal_blocked_by_pending_outcomes")
+                        .put("pending_outcomes", pendingJson)
+                        .put("instruction", instructionForPending(pending));
+                if (!mLastMessageSendResult.trim().isEmpty()) {
+                    result.put("last_messages_send_result", mLastMessageSendResult);
+                }
+                return result.toString();
+            } catch (JSONException e) {
+                return "{\"status\":\"error\","
+                        + "\"reason\":\"terminal_blocked_by_pending_outcomes\"}";
+            }
+        }
+
+        String pendingSummary() {
+            return pendingForTerminalTool("finish_task").toString();
+        }
+
+        private List<String> pendingForTerminalTool(String toolName) {
+            ArrayList<String> pending = new ArrayList<>();
+            if ("finish_task".equals(toolName) && mPendingMessageSend) {
+                pending.add("message_send");
+            } else if ("fail_task".equals(toolName) && mPendingMessageSend
+                    && !mMessageSendBlocked && !mMessageSendAttempted) {
+                pending.add("message_send");
+            }
+            return pending;
+        }
+
+        private String instructionForPending(List<String> pending) {
+            StringBuilder instruction = new StringBuilder();
+            if (pending.contains("message_send")) {
+                instruction.append("The message is not complete until messages_send ")
+                        .append("returns status=messages.sent. Resolve the recipient if ")
+                        .append("needed, then call messages_send with the requested body. ");
+            }
+            if (instruction.length() == 0) {
+                instruction.append("Continue with the next concrete phone tool.");
+            }
+            return instruction.toString().trim();
+        }
+
+        private void reset() {
+            mPendingMessageSend = false;
+            mMessageSendAttempted = false;
+            mMessageSendBlocked = false;
+            mLastMessageSendResult = "";
+        }
+
+        private static boolean isMessageSendRequest(String text) {
+            boolean hasMessageNoun = containsAny(text, "sms", "text", "message",
+                    "messages", "imessage");
+            boolean hasSendVerb = containsAny(text, "send", "text ", "tell ",
+                    "message ");
+            return hasMessageNoun && hasSendVerb;
+        }
+
+        private static boolean containsAny(String text, String... needles) {
+            String normalized = normalize(text);
+            for (String needle : needles) {
+                if (!needle.isEmpty() && normalized.contains(needle)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static String normalize(String value) {
+            return value == null ? "" : value.toLowerCase(Locale.US);
+        }
     }
 
     private static final class RealtimeFunctionCall {
@@ -1151,7 +1633,19 @@ public final class OpenAiRealtimeVoiceSession {
         }
     }
 
-    private static final class RealtimeWebSocket {
+    private static final class CachedScreenContext {
+        final JSONObject screenJson;
+        final int rawLength;
+        final long uptimeMillis;
+
+        CachedScreenContext(JSONObject screenJson, int rawLength, long uptimeMillis) {
+            this.screenJson = screenJson == null ? new JSONObject() : screenJson;
+            this.rawLength = Math.max(0, rawLength);
+            this.uptimeMillis = uptimeMillis;
+        }
+    }
+
+    static final class RealtimeWebSocket {
         private static final String WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         private final SSLSocket mSocket;
         private final InputStream mInput;
@@ -1180,33 +1674,37 @@ public final class OpenAiRealtimeVoiceSession {
             byte[] nonce = new byte[16];
             new SecureRandom().nextBytes(nonce);
             String key = Base64.encodeToString(nonce, Base64.NO_WRAP);
-            String request = "GET " + path + " HTTP/1.1\r\n"
-                    + "Host: " + host + "\r\n"
-                    + "Upgrade: websocket\r\n"
-                    + "Connection: Upgrade\r\n"
-                    + "Sec-WebSocket-Key: " + key + "\r\n"
-                    + "Sec-WebSocket-Version: 13\r\n"
-                    + "Authorization: Bearer " + bearerToken + "\r\n"
-                    + "OpenAI-Safety-Identifier: openphone-local-device\r\n"
-                    + "\r\n";
+            StringBuilder request = new StringBuilder()
+                    .append("GET ").append(path).append(" HTTP/1.1\r\n")
+                    .append("Host: ").append(host).append("\r\n")
+                    .append("Upgrade: websocket\r\n")
+                    .append("Connection: Upgrade\r\n")
+                    .append("Sec-WebSocket-Key: ").append(key).append("\r\n")
+                    .append("Sec-WebSocket-Version: 13\r\n");
+            if (bearerToken != null && !bearerToken.trim().isEmpty()) {
+                request.append("Authorization: Bearer ").append(bearerToken).append("\r\n")
+                        .append("OpenAI-Safety-Identifier: openphone-local-device\r\n");
+            }
+            request.append("\r\n");
             OutputStream output = socket.getOutputStream();
-            output.write(request.getBytes(StandardCharsets.US_ASCII));
+            output.write(request.toString().getBytes(StandardCharsets.US_ASCII));
             output.flush();
 
-            BufferedReader reader = new BufferedReader(new InputStreamReader(
-                    socket.getInputStream(), StandardCharsets.US_ASCII));
-            String status = reader.readLine();
-            if (status == null || !status.contains(" 101 ")) {
-                throw new IOException("Realtime WebSocket upgrade failed: " + status);
-            }
+            InputStream input = socket.getInputStream();
+            String header = readHttpHeader(input);
+            String[] lines = header.split("\\r?\\n");
+            String status = lines.length == 0 ? "" : lines[0];
             String accept = "";
-            String line;
-            while ((line = reader.readLine()) != null && !line.isEmpty()) {
+            for (int i = 1; i < lines.length; i++) {
+                String line = lines[i];
                 int colon = line.indexOf(':');
                 if (colon > 0 && "sec-websocket-accept".equals(
                         line.substring(0, colon).trim().toLowerCase(Locale.US))) {
                     accept = line.substring(colon + 1).trim();
                 }
+            }
+            if (status == null || !status.contains(" 101 ")) {
+                throw new IOException("Realtime WebSocket upgrade failed: " + status);
             }
             String expected = websocketAccept(key);
             if (!expected.equals(accept)) {
@@ -1310,7 +1808,7 @@ public final class OpenAiRealtimeVoiceSession {
                 if (opcode == 0xA) {
                     continue;
                 }
-                if (opcode == 0x1 || opcode == 0x0) {
+                if (opcode == 0x1 || opcode == 0x2 || opcode == 0x0) {
                     message.write(payload);
                     if (fin) {
                         return message.toString(StandardCharsets.UTF_8.name());
@@ -1339,6 +1837,31 @@ public final class OpenAiRealtimeVoiceSession {
                 buffer.put(chunk, 0, count);
             }
             return buffer.array();
+        }
+
+        private static String readHttpHeader(InputStream input) throws IOException {
+            ByteArrayOutputStream header = new ByteArrayOutputStream();
+            int matched = 0;
+            byte[] marker = new byte[] {'\r', '\n', '\r', '\n'};
+            while (true) {
+                int value = input.read();
+                if (value < 0) {
+                    throw new IOException("Realtime WebSocket EOF during handshake.");
+                }
+                header.write(value);
+                if ((byte) value == marker[matched]) {
+                    matched++;
+                    if (matched == marker.length) {
+                        break;
+                    }
+                } else {
+                    matched = (byte) value == marker[0] ? 1 : 0;
+                }
+                if (header.size() > 64 * 1024) {
+                    throw new IOException("Realtime WebSocket header too large.");
+                }
+            }
+            return header.toString(StandardCharsets.US_ASCII.name());
         }
 
         private static String websocketAccept(String key) throws IOException {

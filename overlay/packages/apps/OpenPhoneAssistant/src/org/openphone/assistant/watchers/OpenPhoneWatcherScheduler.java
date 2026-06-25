@@ -217,7 +217,12 @@ public final class OpenPhoneWatcherScheduler {
                 condition.optString("sender", ""),
                 condition.optString("from", ""));
         long threadId = condition.optLong("thread_id", 0L);
-        if (address.isEmpty() && threadId <= 0) {
+        boolean matchAny = condition.optBoolean("match_any", false)
+                || isAnyNumberToken(address);
+        if (matchAny) {
+            address = "";
+        }
+        if (address.isEmpty() && threadId <= 0 && !matchAny) {
             failWatcher(context, store, watcher, now, "missing_message_watcher_target");
             return;
         }
@@ -241,13 +246,23 @@ public final class OpenPhoneWatcherScheduler {
         }
         if (reply != null) {
             String resultHash = "message_reply:" + reply.messageId + ":" + reply.dateMillis;
+            long interval = messageWatcherIntervalMillis(condition, schedule);
+            long nextRunAt = now + interval;
+            if (resultAlreadySeen(watcher.lastResultHash, resultHash)) {
+                store.markNoop(watcher.id, nextRunAt, resultHash, now);
+                return;
+            }
             JSONObject event = messageEvent(watcher, "reply", address, threadId, reply, now);
             ReactionResult reaction = runWatcherReaction(context, watcher, event);
             if (!reaction.success) {
                 failWatcher(context, store, watcher, now, reaction.error);
                 return;
             }
-            store.markFired(watcher.id, resultHash, now);
+            if (matchAny || condition.optBoolean("recurring", false)) {
+                store.markNoop(watcher.id, nextRunAt, resultHash, now);
+            } else {
+                store.markFired(watcher.id, resultHash, now);
+            }
             if ("reply".equals(notifyOn) && reaction.shouldNotify) {
                 OpenPhoneNotificationController.showWatcherFired(context, watcher);
             }
@@ -444,7 +459,9 @@ public final class OpenPhoneWatcherScheduler {
         }
         String[] projection = new String[] {
                 Telephony.Sms._ID,
+                Telephony.Sms.THREAD_ID,
                 Telephony.Sms.ADDRESS,
+                Telephony.Sms.BODY,
                 Telephony.Sms.DATE
         };
         try (Cursor cursor = context.getContentResolver().query(
@@ -457,11 +474,12 @@ public final class OpenPhoneWatcherScheduler {
             int scanned = 0;
             while (cursor.moveToNext() && scanned < 100) {
                 scanned++;
-                String rowAddress = cursor.getString(1);
+                String rowAddress = cursor.getString(2);
                 if (!address.isEmpty() && !addressMatches(rowAddress, address)) {
                     continue;
                 }
-                return new InboundMessage(cursor.getLong(0), cursor.getLong(2));
+                return new InboundMessage(cursor.getLong(0), cursor.getLong(1),
+                        rowAddress, cursor.getString(3), cursor.getLong(4));
             }
         }
         return null;
@@ -572,6 +590,8 @@ public final class OpenPhoneWatcherScheduler {
                     .put("watcher_id", watcher.id)
                     .put("watcher_title", watcher.title)
                     .put("event", event);
+            prompt = prompt + "\n\nWatcher event JSON:\n"
+                    + (event == null ? "{}" : event.toString());
             JSONObject schedule = new JSONObject()
                     .put("next_run_at", System.currentTimeMillis() + MIN_DELAY_MILLIS);
             JSONObject jobDelivery = new JSONObject()
@@ -728,13 +748,18 @@ public final class OpenPhoneWatcherScheduler {
             String address, long threadId, InboundMessage reply, long now) {
         JSONObject event = baseEvent(watcher, eventType, now);
         try {
+            String eventAddress = firstNonEmpty(address, reply == null ? "" : reply.address);
+            long eventThreadId = threadId > 0 ? threadId : reply == null ? 0L : reply.threadId;
             event.put("source", "message")
-                    .put("address", safe(address))
-                    .put("number", safe(address))
-                    .put("thread_id", threadId);
+                    .put("address", safe(eventAddress))
+                    .put("number", safe(eventAddress))
+                    .put("thread_id", eventThreadId);
             if (reply != null) {
                 event.put("message_id", reply.messageId)
-                        .put("message_date", reply.dateMillis);
+                        .put("message_date", reply.dateMillis)
+                        .put("date", reply.dateMillis)
+                        .put("body", safe(reply.body))
+                        .put("text", safe(reply.body));
             }
         } catch (JSONException ignored) {
         }
@@ -934,10 +959,17 @@ public final class OpenPhoneWatcherScheduler {
 
     private static final class InboundMessage {
         final long messageId;
+        final long threadId;
+        final String address;
+        final String body;
         final long dateMillis;
 
-        InboundMessage(long messageId, long dateMillis) {
+        InboundMessage(long messageId, long threadId, String address, String body,
+                long dateMillis) {
             this.messageId = messageId;
+            this.threadId = threadId;
+            this.address = address == null ? "" : address.trim();
+            this.body = body == null ? "" : body;
             this.dateMillis = dateMillis;
         }
     }

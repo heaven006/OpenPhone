@@ -1498,7 +1498,7 @@
     },
     {
       "name": "watchers.create",
-      "description": "Create a durable OpenPhone watcher: a future trigger plus an optional reaction. Use for proactive monitoring of message replies/no-reply deadlines, calls/no-call deadlines, notification matches, web/page changes, semantic page conditions, and requests like tell me when, remind me if, watch this, let me know, or make sure I do not forget. If the user asks the phone to do something when the trigger happens, store that reaction in delivery using delivery.tool plus delivery.arguments, or delivery.prompt for a background agent job. Tool arguments may reference trigger data with templates such as {{event.number}}, {{event.address}}, {{event.title}}, {{event.text}}, {{event.url}}, {{watcher.id}}, and {{watcher.title}}. Do not use watcher_create for explicit run-as-soon-as-possible queued agent work; use background_job_create for that.",
+      "description": "Create a durable OpenPhone watcher: a future trigger plus an optional reaction. Use for proactive monitoring of message replies/no-reply deadlines, calls/no-call deadlines, notification matches, web/page changes, semantic page conditions, and requests like tell me when, remind me if, watch this, let me know, or make sure I do not forget. If the user asks the phone to do something when the trigger happens, store that reaction in delivery using delivery.tool plus delivery.arguments, or delivery.prompt for a background agent job. Tool arguments may reference trigger data with templates such as {{event.number}}, {{event.address}}, {{event.title}}, {{event.text}}, {{event.url}}, {{watcher.id}}, and {{watcher.title}}. For requests to monitor incoming SMS/messages and check, research, classify, summarize, or otherwise reason about each message, create a message watcher with match_any=true and recurring=true, then use delivery.prompt so the fired watcher starts a background agent job; the prompt should include {{event.text}} and may tell the agent to use browser_search or browser_fetch_page for internet context before notifying the user. Do not use watcher_create for explicit run-as-soon-as-possible queued agent work; use background_job_create for that.",
       "model_tool": "watcher_create",
       "kind": "action",
       "input_schema_json": {
@@ -1566,7 +1566,7 @@
           },
           "delivery": {
             "type": "object",
-            "description": "Delivery or reaction details. Use {\"mode\":\"notification\"} for alerts, {\"tool\":\"model_tool_name\",\"arguments\":{...}} for a stored tool reaction, or {\"mode\":\"background_job\",\"prompt\":\"...\"} for an observe-first background agent turn. Set notify=false or mode=silent to avoid a notification after the reaction."
+            "description": "Delivery or reaction details. Use {\"mode\":\"notification\"} for alerts, {\"tool\":\"model_tool_name\",\"arguments\":{...}} for a stored tool reaction, or {\"mode\":\"background_job\",\"prompt\":\"...\"} for an observe-first background agent turn. For SMS research/classification/evaluation watchers, use delivery.prompt with {{event.text}} and browser_search/browser_fetch_page instructions rather than hardcoding the check in the watcher. Set notify=false or mode=silent to avoid a notification after the reaction."
           },
           "tool": {
             "type": "string",

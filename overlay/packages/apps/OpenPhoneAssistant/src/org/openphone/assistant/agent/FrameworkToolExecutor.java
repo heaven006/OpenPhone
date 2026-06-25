@@ -1041,25 +1041,63 @@ public final class FrameworkToolExecutor {
             return error("messages_permission_denied:send");
         }
         String to = arguments.optString("to", "").trim();
+        String contactQuery = arguments.optString("contact_query", "").trim();
         String body = arguments.optString("body", "").trim();
+        String resolvedFrom = "";
+        if (!to.isEmpty() && !looksLikeSmsAddress(to)) {
+            resolvedFrom = to;
+            String resolved = firstPhoneForContactQuery(to);
+            if (!resolved.isEmpty()) {
+                to = resolved;
+            }
+        }
+        if ((to.isEmpty() || !looksLikeSmsAddress(to)) && !contactQuery.isEmpty()) {
+            resolvedFrom = contactQuery;
+            String resolved = firstPhoneForContactQuery(contactQuery);
+            if (!resolved.isEmpty()) {
+                to = resolved;
+            }
+        }
         if (to.isEmpty()) {
             return error("empty_message_recipient");
+        }
+        if (!looksLikeSmsAddress(to)) {
+            return error("message_recipient_not_resolved:" + to);
         }
         if (body.isEmpty()) {
             return error("empty_message_body");
         }
         try {
             SmsManager.getDefault().sendTextMessage(to, null, body, null, null);
-            return new JSONObject()
+            JSONObject result = new JSONObject()
                     .put("status", "messages.sent")
                     .put("to", to)
-                    .put("body_length", body.length())
-                    .toString();
+                    .put("body_length", body.length());
+            if (!resolvedFrom.isEmpty()) {
+                result.put("resolved_from", resolvedFrom);
+            }
+            return result.toString();
         } catch (SecurityException e) {
             return error("messages_permission_denied:send");
         } catch (RuntimeException e) {
             return error("messages_send_failed:" + e.getClass().getSimpleName());
         }
+    }
+
+    private static boolean looksLikeSmsAddress(String value) {
+        if (value == null) {
+            return false;
+        }
+        boolean hasDigit = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (Character.isDigit(c)) {
+                hasDigit = true;
+            } else if (Character.isLetter(c)) {
+                return false;
+            }
+        }
+        return hasDigit;
     }
 
     private static final class SmsSelection {
@@ -1979,7 +2017,10 @@ public final class FrameworkToolExecutor {
                     condition.optString("phone_number", ""),
                     condition.optString("sender", ""),
                     condition.optString("from", ""));
-            if (!address.isEmpty()) {
+            boolean matchAny = out.optBoolean("match_any", false)
+                    || condition.optBoolean("match_any", false)
+                    || isAnyNumberToken(address);
+            if (!address.isEmpty() && !matchAny) {
                 condition.put("address", address);
             }
             long threadId = firstPositive(out.optLong("thread_id", 0L),
@@ -2003,6 +2044,14 @@ public final class FrameworkToolExecutor {
                     condition.optString("notify_on", ""));
             if (!notifyOn.isEmpty()) {
                 condition.put("notify_on", notifyOn.toLowerCase(Locale.US));
+            }
+            boolean hasReaction = hasWatcherReaction(delivery);
+            if (matchAny || (address.isEmpty() && threadId <= 0 && hasReaction)) {
+                condition.put("match_any", true);
+            }
+            if (hasReaction && condition.optBoolean("match_any", false)
+                    && !condition.has("recurring")) {
+                condition.put("recurring", true);
             }
         }
         if ("call_back".equals(type)) {
@@ -2827,8 +2876,10 @@ public final class FrameworkToolExecutor {
             if (query.equals(normalizedLabel) || query.equals(normalizedPackage)) {
                 return packageName;
             }
-            if (containsMatch.isEmpty()
-                    && (normalizedLabel.contains(query) || normalizedPackage.contains(query))) {
+            if (containsMatch.isEmpty() && normalizedLabel.contains(query)) {
+                containsMatch = packageName;
+            } else if (containsMatch.isEmpty() && query.indexOf('.') >= 0
+                    && normalizedPackage.contains(query)) {
                 containsMatch = packageName;
             }
         }
@@ -2853,9 +2904,6 @@ public final class FrameworkToolExecutor {
         if ("play store".equalsIgnoreCase(value) || "google play".equalsIgnoreCase(value)
                 || "google play store".equalsIgnoreCase(value)) {
             return "com.android.vending";
-        }
-        if ("spotify".equalsIgnoreCase(value)) {
-            return "com.spotify.music";
         }
         if ("twitter".equalsIgnoreCase(value) || "x".equalsIgnoreCase(value)) {
             return "com.twitter.android";
