@@ -65,8 +65,8 @@ public final class OpenAiRealtimeVoiceSession {
     private static final long INTERRUPTED_AUDIO_DROP_GRACE_MS = 2500;
     private static final double LOCAL_BARGE_IN_RMS = 1700.0;
     private static final double SERVER_BARGE_IN_RMS = 900.0;
-    private static final int AUTO_SCREEN_MAX_TEXT_CHARS = 7000;
-    private static final int AUTO_SCREEN_MAX_ARRAY_ITEMS = 32;
+    private static final int AUTO_SCREEN_MAX_TEXT_CHARS = 4200;
+    private static final int AUTO_SCREEN_MAX_ARRAY_ITEMS = 18;
     private static final String REALTIME_URL =
             "wss://api.openai.com/v1/realtime?model=" + MODEL;
 
@@ -87,6 +87,7 @@ public final class OpenAiRealtimeVoiceSession {
     private String mPendingAssistantTranscript;
     private volatile boolean mAssistantAudioActive;
     private boolean mPendingToolResponseCreate;
+    private boolean mPendingTerminalToolResponseCreate;
     private volatile long mPlaybackFramesWritten;
     private long mLastAudioWriteUptimeMillis;
     private volatile long mLastBargeInUptimeMillis;
@@ -410,9 +411,9 @@ public final class OpenAiRealtimeVoiceSession {
             callback.onStatus("Observing");
             appendAutoScreenContext(socket, executor,
                     "fresh screen after the user's latest voice turn");
-            socket.send(new JSONObject().put("type", "response.create"));
+            sendActionResponseCreate(socket, "act on the user's latest voice request");
             callback.onStatus("Thinking");
-            Log.i(TAG, "response.create sent after auto screen context");
+            Log.i(TAG, "required action response.create sent after auto screen context");
             return;
         }
         if ("conversation.item.input_audio_transcription.done".equals(type)) {
@@ -473,10 +474,17 @@ public final class OpenAiRealtimeVoiceSession {
                             callback, responseCall);
                 }
             }
+            if (mPendingTerminalToolResponseCreate) {
+                mPendingToolResponseCreate = false;
+                mPendingTerminalToolResponseCreate = false;
+                sendFinalResponseCreate(socket);
+                Log.i(TAG, "final response.create sent after terminal tool");
+                return;
+            }
             if (sentToolOutput || mPendingToolResponseCreate) {
                 mPendingToolResponseCreate = false;
-                socket.send(new JSONObject().put("type", "response.create"));
-                Log.i(TAG, "response.create sent after tool output");
+                sendActionResponseCreate(socket, "continue acting after the latest tool result");
+                Log.i(TAG, "required action response.create sent after tool output");
                 return;
             }
             drainPlayback("response_done");
@@ -535,11 +543,41 @@ public final class OpenAiRealtimeVoiceSession {
                         .put("type", "function_call_output")
                         .put("call_id", call.callId)
                         .put("output", output == null ? "" : output)));
+        if (ToolCatalog.get().isTerminalTool(call.name)) {
+            mPendingTerminalToolResponseCreate = true;
+            return true;
+        }
         if (ToolCatalog.get().drivesVisibleUi(call.name) && !executor.isCancelled()) {
             appendAutoScreenContext(socket, executor,
                     "fresh screen after " + call.name);
         }
         return true;
+    }
+
+    private void sendActionResponseCreate(RealtimeWebSocket socket, String purpose)
+            throws IOException, JSONException {
+        socket.send(new JSONObject()
+                .put("type", "response.create")
+                .put("response", new JSONObject()
+                        .put("tool_choice", "required")
+                        .put("output_modalities", new JSONArray().put("audio"))
+                        .put("max_output_tokens", 500)
+                        .put("instructions", "This is a phone-control turn: call exactly one "
+                                + "tool now. Do not speak, narrate, or explain before the tool. "
+                                + "Use the automatic screen context already provided. "
+                                + (purpose == null ? "" : purpose))));
+    }
+
+    private void sendFinalResponseCreate(RealtimeWebSocket socket)
+            throws IOException, JSONException {
+        socket.send(new JSONObject()
+                .put("type", "response.create")
+                .put("response", new JSONObject()
+                        .put("tool_choice", "none")
+                        .put("output_modalities", new JSONArray().put("audio"))
+                        .put("max_output_tokens", 40)
+                        .put("instructions", "Say the final result in one short sentence. "
+                                + "No explanation, no recap, no tool names.")));
     }
 
     private void appendAutoScreenContext(RealtimeWebSocket socket,
@@ -552,8 +590,8 @@ public final class OpenAiRealtimeVoiceSession {
                     .put("include_screenshot", true)
                     .put("include_activity", true)
                     .put("include_ui_tree", true)
-                    .put("max_dimension", 384)
-                    .put("quality", 45)
+                    .put("max_dimension", 256)
+                    .put("quality", 35)
                     .put("reason", reason == null || reason.trim().isEmpty()
                             ? "refresh current visible phone screen for realtime context"
                             : reason);
